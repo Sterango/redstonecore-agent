@@ -1,5 +1,5 @@
 # Binaries
-rsc
+/rsc
 *.exe
 *.dll
 *.so
@@ -28,9 +28,13 @@ Thumbs.db
 .env
 .env.local
 
-# Data and config (runtime)
-data/
-config/
+# Data and config (runtime) - only at root level
+/data/
+/config/
+
+# Test run data
+/test-run/data/
+/test-run/config/
 
 # Credentials (auto-generated)
 .credentials

@@ -4,7 +4,7 @@ import (
 	"log"
 	"time"
 
-	"github.com/redstonecore/agent/internal/api"
+	"github.com/sterango/redstonecore-agent/internal/api"
 )
 
 type ServerStatusProvider interface {

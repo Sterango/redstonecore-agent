@@ -12,10 +12,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/redstonecore/agent/internal/api"
-	"github.com/redstonecore/agent/internal/config"
-	"github.com/redstonecore/agent/internal/heartbeat"
-	"github.com/redstonecore/agent/internal/minecraft"
+	"github.com/sterango/redstonecore-agent/internal/api"
+	"github.com/sterango/redstonecore-agent/internal/config"
+	"github.com/sterango/redstonecore-agent/internal/heartbeat"
+	"github.com/sterango/redstonecore-agent/internal/minecraft"
 )
 
 type Agent struct {

@@ -1,4 +1,4 @@
-module github.com/redstonecore/agent
+module github.com/sterango/redstonecore-agent
 
 go 1.21
 

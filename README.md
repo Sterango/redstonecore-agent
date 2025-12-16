@@ -36,6 +36,7 @@ Log in to [redstonecore.net](https://redstonecore.net) to:
 - Install modpacks from Modrinth
 - Manage plugins and mods
 - Monitor server performance
+- Access files via web file manager or SFTP
 
 ## Configuration
 
@@ -44,6 +45,8 @@ Log in to [redstonecore.net](https://redstonecore.net) to:
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `RSC_LICENSE_KEY` | Your license key (required) | - |
+| `RSC_CLOUD_URL` | Cloud console URL | `https://redstonecore.net` |
+| `RSC_SFTP_RELAY_URL` | SFTP relay WebSocket URL | `wss://redstonecore.net:8022/sftp` |
 | `TZ` | Timezone | UTC |
 
 ### Optional: config.yaml
@@ -110,6 +113,31 @@ Or simply create servers from the web console - no config file needed!
 - Linux host (recommended) or Windows with WSL2
 - Ports open for Minecraft (default: 25565+)
 - Minimum 2GB RAM per server
+
+## SFTP Access
+
+Access your server files via SFTP without opening any ports on your machine. The agent connects outbound to the RedstoneCore relay server.
+
+### Connect with any SFTP client (FileZilla, WinSCP, etc.)
+
+| Setting | Value |
+|---------|-------|
+| Host | `redstonecore.net` |
+| Port | `2222` |
+| Username | Your server's UUID (shown in web console) |
+| Password | Your account password or instance API token |
+
+Example with command line:
+```bash
+sftp -P 2222 5b2f65b5-aace-438d-9347-d9acf555fe48@redstonecore.net
+```
+
+### How it works
+
+1. The agent maintains a WebSocket connection to the SFTP relay
+2. You connect to the relay with your SFTP client
+3. The relay authenticates you and forwards commands to your agent
+4. No ports need to be opened on your machine - all connections are outbound
 
 ## Firewall / Port Forwarding
 

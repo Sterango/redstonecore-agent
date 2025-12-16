@@ -1,0 +1,18 @@
+services:
+  redstonecore:
+    image: redstonecore-agent:local
+    container_name: redstonecore-test
+    restart: unless-stopped
+    network_mode: host
+
+    environment:
+      - RSC_LICENSE_KEY=RSC-HCX3-5VNQ-C6CA-HO19
+
+    volumes:
+      - ./data:/data
+      - ./config:/config
+
+    deploy:
+      resources:
+        limits:
+          memory: 4G

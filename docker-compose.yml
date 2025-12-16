@@ -1,0 +1,55 @@
+# RedstoneCore Agent Docker Compose
+# Usage: docker-compose up -d
+
+version: '3.8'
+
+services:
+  redstonecore:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: redstonecore-agent:local
+    container_name: redstonecore
+    restart: unless-stopped
+
+    environment:
+      # Required: Your license key from redstonecore.sterango.com
+      - RSC_LICENSE_KEY=${RSC_LICENSE_KEY}
+
+      # Optional: Override cloud URL (for testing/self-hosted)
+      # - RSC_CLOUD_URL=https://redstonecore.sterango.com
+
+      # Optional: Timezone
+      - TZ=${TZ:-UTC}
+
+    volumes:
+      # Server data (world files, plugins, etc.)
+      - ./data:/data
+
+      # Configuration files
+      - ./config:/config
+
+    ports:
+      # Minecraft server ports
+      # Adjust based on your server configuration
+      - "25565-25575:25565-25575"
+
+    # Resource limits (adjust based on your server needs)
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+        reservations:
+          memory: 2G
+
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+# Optional: Create named volumes instead of bind mounts
+# volumes:
+#   rsc-data:
+#   rsc-config:

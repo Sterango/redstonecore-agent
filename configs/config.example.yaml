@@ -1,0 +1,33 @@
+# RedstoneCore Agent Configuration
+# Copy this file to /config/config.yaml and customize
+
+# Your license key from redstonecore.sterango.com
+license_key: "RSC-XXXX-XXXX-XXXX-XXXX"
+
+# Cloud URL (change only for self-hosted cloud instances)
+cloud_url: "https://redstonecore.sterango.com"
+
+# Data directory for server files
+data_dir: "/data"
+
+# Config directory
+config_dir: "/config"
+
+# Minecraft servers to manage
+servers:
+  - name: "Survival"
+    type: "paper"              # Options: vanilla, paper, spigot, forge, fabric, bungeecord, velocity
+    minecraft_version: "1.21"  # Minecraft version
+    port: 25565               # Server port
+    max_players: 20           # Maximum players
+    ram: 2048                 # Allocated RAM in MB
+    auto_start: true          # Start automatically when agent starts
+
+  # Example: Additional server
+  # - name: "Creative"
+  #   type: "paper"
+  #   minecraft_version: "1.21"
+  #   port: 25566
+  #   max_players: 10
+  #   ram: 1024
+  #   auto_start: false

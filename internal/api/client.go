@@ -236,6 +236,21 @@ func (c *Client) ReportModpackProgress(req *ModpackProgressRequest) error {
 	return err
 }
 
+// FileOperationResultRequest reports file operation results
+type FileOperationResultRequest struct {
+	ServerUUID string                 `json:"server_uuid"`
+	RequestID  string                 `json:"request_id"`
+	Success    bool                   `json:"success"`
+	Error      string                 `json:"error,omitempty"`
+	Data       map[string]interface{} `json:"data,omitempty"`
+}
+
+// ReportFileOperationResult reports the result of a file operation
+func (c *Client) ReportFileOperationResult(req *FileOperationResultRequest) error {
+	_, err := c.post("/api/v1/instance/files/result", req, true)
+	return err
+}
+
 // DownloadPlugin downloads a plugin file from the cloud
 func (c *Client) DownloadPlugin(pluginUUID, destPath string) error {
 	req, err := http.NewRequest("GET", c.baseURL+"/api/v1/instance/plugins/"+pluginUUID+"/download", nil)

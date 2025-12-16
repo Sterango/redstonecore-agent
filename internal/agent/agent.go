@@ -16,12 +16,14 @@ import (
 	"github.com/sterango/redstonecore-agent/internal/config"
 	"github.com/sterango/redstonecore-agent/internal/heartbeat"
 	"github.com/sterango/redstonecore-agent/internal/minecraft"
+	"github.com/sterango/redstonecore-agent/internal/sftp"
 )
 
 type Agent struct {
 	config         *config.Config
 	client         *api.Client
 	heartbeat      *heartbeat.Heartbeat
+	sftpClient     *sftp.Client
 	servers        map[string]*minecraft.Server
 	serversMu      sync.RWMutex
 	consoleBuffers map[string]*minecraft.ConsoleBuffer
@@ -70,6 +72,17 @@ func (a *Agent) Run() error {
 	// Start heartbeat (5 second interval for responsive commands)
 	a.heartbeat = heartbeat.New(a.client, a, 5*time.Second)
 	a.heartbeat.Start()
+
+	// Start SFTP relay client
+	if a.config.SFTPRelayURL != "" {
+		sftpHandler := sftp.NewDefaultHandler(a.getServerDataDir)
+		a.sftpClient = sftp.NewClient(a.config.SFTPRelayURL, a.config.APIToken, sftpHandler)
+		if err := a.sftpClient.Start(); err != nil {
+			log.Printf("Warning: Failed to start SFTP client: %v", err)
+		} else {
+			log.Println("SFTP relay client started")
+		}
+	}
 
 	// Auto-start servers marked for auto-start
 	a.autoStartServers()
@@ -337,6 +350,11 @@ func (a *Agent) autoStartServers() {
 }
 
 func (a *Agent) shutdown() error {
+	// Stop SFTP client
+	if a.sftpClient != nil {
+		a.sftpClient.Stop()
+	}
+
 	// Stop heartbeat
 	if a.heartbeat != nil {
 		a.heartbeat.Stop()
@@ -365,6 +383,18 @@ func (a *Agent) shutdown() error {
 
 	log.Println("Shutdown complete.")
 	return nil
+}
+
+// getServerDataDir returns the data directory for a server by UUID
+func (a *Agent) getServerDataDir(serverUUID string) (string, error) {
+	a.serversMu.RLock()
+	defer a.serversMu.RUnlock()
+
+	if server, exists := a.servers[serverUUID]; exists {
+		return server.DataDir, nil
+	}
+
+	return "", fmt.Errorf("server not found: %s", serverUUID)
 }
 
 // GetServerStatuses implements heartbeat.ServerStatusProvider
@@ -442,6 +472,10 @@ func (a *Agent) ExecuteCommand(cmd api.Command) error {
 		return a.updateProperties(cmd, server)
 	case "change_server_type":
 		return a.changeServerType(cmd, server)
+	case "files_list", "files_read", "files_write", "files_delete", "files_rename", "files_mkdir", "files_upload", "files_download":
+		// File operations are handled async and report their own results
+		go a.handleFileOperation(cmd, server)
+		return nil
 	default:
 		return fmt.Errorf("unknown command: %s", cmd.Command)
 	}

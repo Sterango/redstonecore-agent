@@ -19,11 +19,12 @@ type ServerConfig struct {
 }
 
 type Config struct {
-	LicenseKey string         `yaml:"license_key"`
-	CloudURL   string         `yaml:"cloud_url"`
-	DataDir    string         `yaml:"data_dir"`
-	ConfigDir  string         `yaml:"config_dir"`
-	Servers    []ServerConfig `yaml:"servers"`
+	LicenseKey   string         `yaml:"license_key"`
+	CloudURL     string         `yaml:"cloud_url"`
+	SFTPRelayURL string         `yaml:"sftp_relay_url"`
+	DataDir      string         `yaml:"data_dir"`
+	ConfigDir    string         `yaml:"config_dir"`
+	Servers      []ServerConfig `yaml:"servers"`
 
 	// Runtime fields (not from config file)
 	InstanceUUID string `yaml:"-"`
@@ -32,10 +33,11 @@ type Config struct {
 
 func Load(configPath string) (*Config, error) {
 	cfg := &Config{
-		CloudURL:  "https://redstonecore.net",
-		DataDir:   "/data",
-		ConfigDir: "/config",
-		Servers:   []ServerConfig{},
+		CloudURL:     "https://redstonecore.net",
+		SFTPRelayURL: "wss://redstonecore.net:8022/sftp",
+		DataDir:      "/data",
+		ConfigDir:    "/config",
+		Servers:      []ServerConfig{},
 	}
 
 	// Check environment variables first
@@ -50,6 +52,9 @@ func Load(configPath string) (*Config, error) {
 	}
 	if configDir := os.Getenv("RSC_CONFIG_DIR"); configDir != "" {
 		cfg.ConfigDir = configDir
+	}
+	if sftpRelayURL := os.Getenv("RSC_SFTP_RELAY_URL"); sftpRelayURL != "" {
+		cfg.SFTPRelayURL = sftpRelayURL
 	}
 
 	// Try to load from config file

@@ -144,7 +144,7 @@ func (m *ModpackInstaller) getModrinthVersion(versionID string) (*ModrinthVersio
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "RedstoneCore-Agent/1.0 (https://redstonecore.com)")
+	req.Header.Set("User-Agent", "RedstoneCore-Agent/1.0 (https://redstonecore.net)")
 
 	resp, err := m.httpClient.Do(req)
 	if err != nil {
@@ -318,7 +318,7 @@ func (m *ModpackInstaller) downloadFile(url, destPath string) error {
 	if err != nil {
 		return err
 	}
-	req.Header.Set("User-Agent", "RedstoneCore-Agent/1.0 (https://redstonecore.com)")
+	req.Header.Set("User-Agent", "RedstoneCore-Agent/1.0 (https://redstonecore.net)")
 
 	resp, err := m.httpClient.Do(req)
 	if err != nil {

@@ -6,13 +6,13 @@ Self-hosted Minecraft server management agent that connects to the RedstoneCore 
 
 ### 1. Get a License Key
 
-Visit [redstonecore.sterango.com](https://redstonecore.sterango.com) to create an account and get a license.
+Visit [redstonecore.net](https://redstonecore.net) to create an account and get a license.
 
 ### 2. Deploy with Docker
 
 ```bash
 # Download the docker-compose file
-curl -O https://redstonecore.sterango.com/downloads/docker-compose.yml
+curl -O https://redstonecore.net/downloads/docker-compose.yml
 
 # Create your environment file with your license key
 echo "RSC_LICENSE_KEY=RSC-XXXX-XXXX-XXXX-XXXX" > .env
@@ -29,7 +29,7 @@ docker compose logs -f
 
 ### 3. Manage via Cloud Console
 
-Log in to [redstonecore.sterango.com](https://redstonecore.sterango.com) to:
+Log in to [redstonecore.net](https://redstonecore.net) to:
 - Create and manage servers
 - View real-time console output
 - Start, stop, and restart servers
@@ -158,7 +158,7 @@ docker compose logs -f
 
 ## Support
 
-- Documentation: [redstonecore.sterango.com/docs](https://redstonecore.sterango.com/docs)
+- Documentation: [redstonecore.net/docs](https://redstonecore.net/docs)
 - Issues: [GitHub Issues](https://github.com/redstonecore/agent/issues)
 
 ## License

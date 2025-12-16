@@ -1,5 +1,5 @@
 # RedstoneCore Agent - Production Docker Compose
-# Download: curl -O https://redstonecore.sterango.com/downloads/docker-compose.yml
+# Download: curl -O https://redstonecore.net/downloads/docker-compose.yml
 # Usage: docker-compose up -d
 
 services:
@@ -10,7 +10,7 @@ services:
     network_mode: host
 
     environment:
-      # Required: Your license key from redstonecore.sterango.com
+      # Required: Your license key from redstonecore.net
       - RSC_LICENSE_KEY=${RSC_LICENSE_KEY}
 
       # Optional: Timezone (default: UTC)

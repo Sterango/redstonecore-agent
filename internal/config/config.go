@@ -32,7 +32,7 @@ type Config struct {
 
 func Load(configPath string) (*Config, error) {
 	cfg := &Config{
-		CloudURL:  "https://redstonecore.sterango.com",
+		CloudURL:  "https://redstonecore.net",
 		DataDir:   "/data",
 		ConfigDir: "/config",
 		Servers:   []ServerConfig{},

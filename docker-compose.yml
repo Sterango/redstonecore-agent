@@ -13,11 +13,11 @@ services:
     restart: unless-stopped
 
     environment:
-      # Required: Your license key from redstonecore.sterango.com
+      # Required: Your license key from redstonecore.net
       - RSC_LICENSE_KEY=${RSC_LICENSE_KEY}
 
       # Optional: Override cloud URL (for testing/self-hosted)
-      # - RSC_CLOUD_URL=https://redstonecore.sterango.com
+      # - RSC_CLOUD_URL=https://redstonecore.net
 
       # Optional: Timezone
       - TZ=${TZ:-UTC}

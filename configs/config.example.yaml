@@ -1,11 +1,11 @@
 # RedstoneCore Agent Configuration
 # Copy this file to /config/config.yaml and customize
 
-# Your license key from redstonecore.sterango.com
+# Your license key from redstonecore.net
 license_key: "RSC-XXXX-XXXX-XXXX-XXXX"
 
 # Cloud URL (change only for self-hosted cloud instances)
-cloud_url: "https://redstonecore.sterango.com"
+cloud_url: "https://redstonecore.net"
 
 # Data directory for server files
 data_dir: "/data"

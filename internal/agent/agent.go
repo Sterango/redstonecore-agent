@@ -3,7 +3,9 @@ package agent
 import (
 	"crypto/rand"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -18,6 +20,9 @@ import (
 	"github.com/sterango/redstonecore-agent/internal/minecraft"
 	"github.com/sterango/redstonecore-agent/internal/sftp"
 )
+
+// Ensure Agent implements the heartbeat.ServerStatusProvider interface
+var _ heartbeat.ServerStatusProvider = (*Agent)(nil)
 
 type Agent struct {
 	config         *config.Config
@@ -69,13 +74,42 @@ func (a *Agent) Run() error {
 		log.Printf("Warning: Failed to sync servers: %v", err)
 	}
 
-	// Start heartbeat (5 second interval for responsive commands)
-	a.heartbeat = heartbeat.New(a.client, a, 5*time.Second)
+	// Start heartbeat (1 second interval for immediate command execution)
+	a.heartbeat = heartbeat.New(a.client, a, 1*time.Second)
 	a.heartbeat.Start()
 
 	// Start SFTP relay client
 	if a.config.SFTPRelayURL != "" {
 		sftpHandler := sftp.NewDefaultHandler(a.getServerDataDir)
+		sftpHandler.SetDataDir(a.config.DataDir)
+		sftpHandler.SetBackupCallbacks(
+			// Progress callback
+			func(serverUUID, backupUUID, stage, message string, progress, total int) {
+				if a.client != nil {
+					a.client.ReportBackupProgress(&api.BackupProgressRequest{
+						ServerUUID: serverUUID,
+						BackupUUID: backupUUID,
+						Stage:      stage,
+						Message:    message,
+						Progress:   progress,
+						Total:      total,
+					})
+				}
+			},
+			// Complete callback
+			func(serverUUID, backupUUID string, success bool, filename string, size int64, errMsg string) {
+				if a.client != nil {
+					a.client.ReportBackupComplete(&api.BackupCompleteRequest{
+						ServerUUID: serverUUID,
+						BackupUUID: backupUUID,
+						Success:    success,
+						Filename:   filename,
+						Size:       size,
+						Error:      errMsg,
+					})
+				}
+			},
+		)
 		a.sftpClient = sftp.NewClient(a.config.SFTPRelayURL, a.config.APIToken, sftpHandler)
 		if err := a.sftpClient.Start(); err != nil {
 			log.Printf("Warning: Failed to start SFTP client: %v", err)
@@ -100,11 +134,13 @@ func (a *Agent) Run() error {
 
 func (a *Agent) register() error {
 	hostname, _ := os.Hostname()
+	publicIP := a.getPublicIP()
 
 	req := &api.RegisterRequest{
 		LicenseKey: a.config.LicenseKey,
 		Name:       hostname,
 		Hostname:   hostname,
+		IPAddress:  publicIP,
 		Version:    "1.0.0",
 		SystemInfo: a.getSystemInfo(),
 	}
@@ -128,6 +164,40 @@ func (a *Agent) register() error {
 	log.Printf("License: %s (%s), Max servers: %d", resp.License.UUID, resp.License.Plan, resp.License.MaxServers)
 
 	return nil
+}
+
+// getPublicIP fetches the public IP address using an external service
+func (a *Agent) getPublicIP() string {
+	services := []string{
+		"https://api.ipify.org",
+		"https://icanhazip.com",
+		"https://ifconfig.me/ip",
+	}
+
+	client := &http.Client{Timeout: 5 * time.Second}
+
+	for _, svc := range services {
+		resp, err := client.Get(svc)
+		if err != nil {
+			continue
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode == http.StatusOK {
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				continue
+			}
+			ip := strings.TrimSpace(string(body))
+			if ip != "" {
+				log.Printf("Detected public IP: %s", ip)
+				return ip
+			}
+		}
+	}
+
+	log.Println("Could not detect public IP")
+	return ""
 }
 
 func (a *Agent) initServers() error {
@@ -157,6 +227,7 @@ func (a *Agent) initServers() error {
 			OnConsoleLine: func(line string) {
 				consoleBuf.AddLine(line)
 			},
+			OnPlayerEvent: a.createPlayerEventCallback(uuid),
 		})
 
 		// Ensure server.properties is set up
@@ -222,6 +293,45 @@ func (a *Agent) discoverServers() error {
 		maxPlayers := 20
 		allocatedRAM := 2048
 
+		// Try to read allocated RAM from user_jvm_args.txt if it exists
+		jvmArgsPath := filepath.Join(serverDir, "user_jvm_args.txt")
+		if jvmArgsData, err := os.ReadFile(jvmArgsPath); err == nil {
+			jvmArgsContent := string(jvmArgsData)
+			// Parse -Xmx value (e.g., -Xmx12288M or -Xmx8G)
+			for _, line := range strings.Split(jvmArgsContent, "\n") {
+				line = strings.TrimSpace(line)
+				if strings.HasPrefix(line, "-Xmx") {
+					memStr := strings.TrimPrefix(line, "-Xmx")
+					// Parse the value
+					var memValue int
+					if strings.HasSuffix(memStr, "G") {
+						fmt.Sscanf(strings.TrimSuffix(memStr, "G"), "%d", &memValue)
+						allocatedRAM = memValue * 1024
+					} else if strings.HasSuffix(memStr, "M") {
+						fmt.Sscanf(strings.TrimSuffix(memStr, "M"), "%d", &memValue)
+						allocatedRAM = memValue
+					}
+					break
+				}
+			}
+		}
+
+		// Detect server type from files
+		if _, err := os.Stat(filepath.Join(serverDir, "startserver.sh")); err == nil {
+			// ATM-style modpack with NeoForge
+			serverType = minecraft.TypeNeoForge
+		} else if matches, _ := filepath.Glob(filepath.Join(serverDir, "neoforge-*.jar")); len(matches) > 0 {
+			serverType = minecraft.TypeNeoForge
+		} else if matches, _ := filepath.Glob(filepath.Join(serverDir, "forge-*.jar")); len(matches) > 0 {
+			serverType = minecraft.TypeForge
+		} else if matches, _ := filepath.Glob(filepath.Join(serverDir, "fabric-*.jar")); len(matches) > 0 {
+			serverType = minecraft.TypeFabric
+		} else if matches, _ := filepath.Glob(filepath.Join(serverDir, "paper-*.jar")); len(matches) > 0 {
+			serverType = minecraft.TypePaper
+		} else if matches, _ := filepath.Glob(filepath.Join(serverDir, "spigot-*.jar")); len(matches) > 0 {
+			serverType = minecraft.TypeSpigot
+		}
+
 		// Override from properties if available
 		if props != nil {
 			if p, ok := props["server-port"]; ok {
@@ -247,6 +357,7 @@ func (a *Agent) discoverServers() error {
 			OnConsoleLine: func(line string) {
 				consoleBuf.AddLine(line)
 			},
+			OnPlayerEvent: a.createPlayerEventCallback(uuid),
 		})
 
 		a.serversMu.Lock()
@@ -254,6 +365,9 @@ func (a *Agent) discoverServers() error {
 		a.serversMu.Unlock()
 
 		log.Printf("Discovered existing server: %s (%s)", entry.Name(), uuid)
+
+		// Sync properties to cloud
+		go a.syncServerProperties(server)
 	}
 
 	return nil
@@ -289,8 +403,8 @@ func generateUUID() string {
 }
 
 func (a *Agent) syncServers() error {
-	a.serversMu.RLock()
-	defer a.serversMu.RUnlock()
+	a.serversMu.Lock()
+	defer a.serversMu.Unlock()
 
 	var servers []api.SyncServer
 	for _, server := range a.servers {
@@ -304,6 +418,7 @@ func (a *Agent) syncServers() error {
 			AllocatedRAM:     server.AllocatedRAM,
 			Status:           string(server.Status),
 			PlayerCount:      server.PlayerCount,
+			CurrentPlayers:   server.GetCurrentPlayers(),
 		})
 	}
 
@@ -316,6 +431,12 @@ func (a *Agent) syncServers() error {
 		return err
 	}
 
+	// Build a set of cloud server UUIDs for quick lookup
+	cloudServerUUIDs := make(map[string]string) // UUID -> Name
+	for _, syncedServer := range resp.Servers {
+		cloudServerUUIDs[syncedServer.UUID] = syncedServer.Name
+	}
+
 	// Update UUIDs from cloud response (in case they were assigned by cloud)
 	for _, syncedServer := range resp.Servers {
 		for uuid, server := range a.servers {
@@ -324,12 +445,25 @@ func (a *Agent) syncServers() error {
 				a.servers[syncedServer.UUID] = server
 				server.UUID = syncedServer.UUID
 				delete(a.servers, uuid)
+				// Update the cloud lookup with the new UUID
+				cloudServerUUIDs[syncedServer.UUID] = syncedServer.Name
 				break
 			}
 		}
 	}
 
-	log.Printf("Synced %d servers to cloud", len(servers))
+	// Remove orphaned servers (exist locally but not in cloud)
+	for uuid, server := range a.servers {
+		if _, existsInCloud := cloudServerUUIDs[uuid]; !existsInCloud {
+			log.Printf("Removing orphaned server from tracking: %s (%s) - no longer exists in cloud", server.Name, uuid)
+			// Stop console buffer if exists
+			a.stopConsoleBuffer(uuid)
+			// Remove from local tracking (but keep files - user can manually delete)
+			delete(a.servers, uuid)
+		}
+	}
+
+	log.Printf("Synced %d servers to cloud", len(resp.Servers))
 	return nil
 }
 
@@ -412,6 +546,31 @@ func (a *Agent) GetServerStatuses() []api.ServerStatus {
 	}
 
 	return statuses
+}
+
+// GetServerAnalytics implements heartbeat.ServerStatusProvider
+func (a *Agent) GetServerAnalytics() []heartbeat.ServerAnalytics {
+	a.serversMu.RLock()
+	defer a.serversMu.RUnlock()
+
+	var analytics []heartbeat.ServerAnalytics
+	for _, server := range a.servers {
+		// Only report analytics for running servers
+		if server.Status != minecraft.StatusRunning {
+			continue
+		}
+
+		analytics = append(analytics, heartbeat.ServerAnalytics{
+			UUID:         server.UUID,
+			PlayerCount:  server.PlayerCount,
+			TPS:          0, // TPS tracking not yet implemented
+			MemoryUsedMB: 0, // Memory tracking not yet implemented
+			MemoryMaxMB:  server.AllocatedRAM,
+			CPUPercent:   0, // CPU tracking not yet implemented
+		})
+	}
+
+	return analytics
 }
 
 // ExecuteCommand implements heartbeat.ServerStatusProvider
@@ -532,6 +691,7 @@ func (a *Agent) createServer(cmd api.Command) error {
 		OnConsoleLine: func(line string) {
 			consoleBuf.AddLine(line)
 		},
+		OnPlayerEvent: a.createPlayerEventCallback(cmd.ServerUUID),
 	})
 
 	// Ensure server.properties is set up
@@ -611,12 +771,18 @@ func (a *Agent) createModpackServer(cmd api.Command) error {
 	versionID, _ := modpackData["version_id"].(string)
 	modpackName, _ := modpackData["name"].(string)
 	loader, _ := modpackData["loader"].(string)
+	downloadURL, _ := modpackData["download_url"].(string)
+	filename, _ := modpackData["filename"].(string)
+	curseforgeAPIKey, _ := modpackData["curseforge_api_key"].(string)
+	serverPackURL, _ := modpackData["server_pack_url"].(string)
+	serverPackFilename, _ := modpackData["server_pack_filename"].(string)
 
 	if name == "" || versionID == "" {
 		return fmt.Errorf("server name and modpack version_id are required")
 	}
 
-	log.Printf("Creating modpack server: %s (modpack: %s, loader: %s)", name, modpackName, loader)
+	useServerPack := serverPackURL != ""
+	log.Printf("Creating modpack server: %s (modpack: %s, loader: %s, using server pack: %v)", name, modpackName, loader, useServerPack)
 
 	// Create server directory
 	serverDir := filepath.Join(a.config.DataDir, "servers", name)
@@ -624,55 +790,171 @@ func (a *Agent) createModpackServer(cmd api.Command) error {
 		return fmt.Errorf("failed to create server directory: %w", err)
 	}
 
-	// Install the modpack
-	modpackInstaller := minecraft.NewModpackInstaller(filepath.Join(a.config.DataDir, "cache"))
-	index, err := modpackInstaller.InstallModpack(versionID, serverDir)
-	if err != nil {
-		return fmt.Errorf("failed to install modpack: %w", err)
-	}
-
-	// Determine Minecraft version and loader from modpack
-	mcVersion := index.GetMinecraftVersion()
-	loaderType := index.GetLoaderType()
-	loaderVersion := index.GetLoaderVersion()
-
-	if mcVersion == "" {
-		mcVersion = "1.20.1" // Fallback
-	}
-	if loaderType == "" {
-		loaderType = loader // Use the loader from payload if not in index
-	}
-
-	log.Printf("Modpack requires: Minecraft %s, %s %s", mcVersion, loaderType, loaderVersion)
-
-	// Download the appropriate server JAR based on loader
-	downloader := minecraft.NewDownloader(filepath.Join(a.config.DataDir, "cache"))
+	// Determine server type based on loader
 	var serverType minecraft.ServerType
-
-	switch loaderType {
+	switch loader {
 	case "fabric":
 		serverType = minecraft.TypeFabric
 	case "forge":
 		serverType = minecraft.TypeForge
 	case "neoforge":
-		serverType = minecraft.TypeForge // NeoForge uses similar installer
+		serverType = minecraft.TypeNeoForge
 	case "quilt":
-		serverType = minecraft.TypeFabric // Quilt is Fabric-compatible for server
+		serverType = minecraft.TypeFabric
 	default:
-		serverType = minecraft.TypeFabric // Default to Fabric
+		serverType = minecraft.TypeFabric
 	}
 
-	jarPath, err := downloader.DownloadServerWithLoader(serverType, mcVersion, loaderVersion, serverDir)
-	if err != nil {
-		log.Printf("Warning: Failed to download %s server: %v, trying alternative...", loaderType, err)
-		// Fallback to just the loader without specific version
-		jarPath, err = downloader.DownloadServer(serverType, mcVersion, serverDir)
+	mcVersion, _ := cmd.Payload["minecraft_version"].(string)
+	if mcVersion == "" {
+		mcVersion = "1.20.1"
+	}
+
+	var jarPath string
+
+	// If server pack URL is provided, use it (includes loader and mods)
+	if useServerPack {
+		log.Printf("Using server pack from: %s", serverPackURL)
+
+		if a.client != nil {
+			a.client.ReportModpackProgress(&api.ModpackProgressRequest{
+				ServerUUID: cmd.ServerUUID,
+				Stage:      "downloading_server_pack",
+				Message:    "Downloading server pack...",
+				Progress:   10,
+				Total:      100,
+			})
+		}
+
+		// Download and extract server pack
+		serverPackInstaller := minecraft.NewModpackInstaller(filepath.Join(a.config.DataDir, "cache"), curseforgeAPIKey)
+		serverPackInstaller.SetProgressCallback(func(stage, message string, progress, total int, currentFile string) {
+			log.Printf("[Progress] Stage: %s, Progress: %d/%d, File: %s", stage, progress, total, currentFile)
+			if a.client != nil {
+				a.client.ReportModpackProgress(&api.ModpackProgressRequest{
+					ServerUUID:  cmd.ServerUUID,
+					Stage:       stage,
+					Message:     message,
+					Progress:    progress,
+					Total:       total,
+					CurrentFile: currentFile,
+				})
+			}
+		})
+
+		err := serverPackInstaller.InstallServerPack(serverPackURL, serverPackFilename, serverDir)
 		if err != nil {
-			return fmt.Errorf("failed to download server JAR: %w", err)
+			log.Printf("Warning: Failed to install server pack: %v, falling back to manual install", err)
+			useServerPack = false // Fall through to manual installation
+		} else {
+			log.Printf("Server pack installed successfully")
+			// Server pack includes the loader, find the run script or jar
+			// Check for startserver.sh first (used by ATM and similar modpacks)
+			startScript := filepath.Join(serverDir, "startserver.sh")
+			runScript := filepath.Join(serverDir, "run.sh")
+			if _, err := os.Stat(startScript); err == nil {
+				os.Chmod(startScript, 0755)
+				jarPath = startScript
+				log.Printf("Found startserver.sh for server pack")
+			} else if _, err := os.Stat(runScript); err == nil {
+				os.Chmod(runScript, 0755)
+				jarPath = runScript
+				log.Printf("Found run.sh for server pack")
+			} else {
+				// Look for server jar
+				patterns := []string{"forge-*.jar", "neoforge-*.jar", "fabric-*.jar", "server.jar"}
+				for _, pattern := range patterns {
+					matches, _ := filepath.Glob(filepath.Join(serverDir, pattern))
+					for _, m := range matches {
+						if !strings.Contains(filepath.Base(m), "installer") {
+							jarPath = m
+							break
+						}
+					}
+					if jarPath != "" {
+						break
+					}
+				}
+			}
 		}
 	}
 
-	log.Printf("Downloaded server JAR: %s", jarPath)
+	// Fall back to manual installation if server pack not available or failed
+	if !useServerPack {
+		// Install the modpack (use direct URL if provided)
+		modpackInstaller := minecraft.NewModpackInstaller(filepath.Join(a.config.DataDir, "cache"), curseforgeAPIKey)
+
+		// Set up progress callback to report to cloud
+		modpackInstaller.SetProgressCallback(func(stage, message string, progress, total int, currentFile string) {
+			log.Printf("[Progress] Stage: %s, Progress: %d/%d, File: %s", stage, progress, total, currentFile)
+			if a.client != nil {
+				err := a.client.ReportModpackProgress(&api.ModpackProgressRequest{
+					ServerUUID:  cmd.ServerUUID,
+					Stage:       stage,
+					Message:     message,
+					Progress:    progress,
+					Total:       total,
+					CurrentFile: currentFile,
+				})
+				if err != nil {
+					log.Printf("[Progress] Failed to report progress: %v", err)
+				}
+			}
+		})
+
+		var downloadInfo *minecraft.ModpackDownloadInfo
+		if downloadURL != "" {
+			downloadInfo = &minecraft.ModpackDownloadInfo{
+				URL:      downloadURL,
+				Filename: filename,
+			}
+		}
+		modpackInfo, err := modpackInstaller.InstallModpack(versionID, serverDir, downloadInfo)
+		if err != nil {
+			return fmt.Errorf("failed to install modpack: %w", err)
+		}
+
+		// Determine Minecraft version and loader from modpack
+		newMcVersion := modpackInfo.GetMinecraftVersion()
+		loaderType := modpackInfo.GetLoaderType()
+		loaderVersion := modpackInfo.GetLoaderVersion()
+
+		if newMcVersion != "" {
+			mcVersion = newMcVersion
+		}
+		if loaderType == "" {
+			loaderType = loader // Use the loader from payload if not in index
+		}
+
+		log.Printf("Modpack requires: Minecraft %s, %s %s", mcVersion, loaderType, loaderVersion)
+
+		// Update server type based on actual loader from modpack
+		switch loaderType {
+		case "fabric":
+			serverType = minecraft.TypeFabric
+		case "forge":
+			serverType = minecraft.TypeForge
+		case "neoforge":
+			serverType = minecraft.TypeNeoForge
+		case "quilt":
+			serverType = minecraft.TypeFabric
+		}
+
+		// Download the appropriate server JAR based on loader
+		downloader := minecraft.NewDownloader(filepath.Join(a.config.DataDir, "cache"))
+
+		jarPath, err = downloader.DownloadServerWithLoader(serverType, mcVersion, loaderVersion, serverDir)
+		if err != nil {
+			log.Printf("Warning: Failed to download %s server: %v, trying alternative...", loaderType, err)
+			// Fallback to just the loader without specific version
+			jarPath, err = downloader.DownloadServer(serverType, mcVersion, serverDir)
+			if err != nil {
+				return fmt.Errorf("failed to download server JAR: %w", err)
+			}
+		}
+	}
+
+	log.Printf("Server JAR/script: %s", jarPath)
 
 	// Create console buffer for this server
 	consoleBuf := a.createConsoleBuffer(cmd.ServerUUID)
@@ -690,6 +972,7 @@ func (a *Agent) createModpackServer(cmd api.Command) error {
 		OnConsoleLine: func(line string) {
 			consoleBuf.AddLine(line)
 		},
+		OnPlayerEvent: a.createPlayerEventCallback(cmd.ServerUUID),
 	})
 
 	// Ensure server.properties is set up
@@ -706,8 +989,8 @@ func (a *Agent) createModpackServer(cmd api.Command) error {
 	a.servers[cmd.ServerUUID] = server
 	a.serversMu.Unlock()
 
-	log.Printf("Modpack server %s created successfully! (%s %s with %d mods)",
-		name, loaderType, mcVersion, len(index.Files))
+	log.Printf("Modpack server %s created successfully! (%s %s)",
+		name, loader, mcVersion)
 	return nil
 }
 
@@ -740,13 +1023,19 @@ func (a *Agent) changeModpack(cmd api.Command) error {
 	versionID, _ := modpackData["version_id"].(string)
 	modpackName, _ := modpackData["name"].(string)
 	loader, _ := modpackData["loader"].(string)
+	downloadURL, _ := modpackData["download_url"].(string)
+	filename, _ := modpackData["filename"].(string)
+	curseforgeAPIKey, _ := modpackData["curseforge_api_key"].(string)
+	serverPackURL, _ := modpackData["server_pack_url"].(string)
+	serverPackFilename, _ := modpackData["server_pack_filename"].(string)
 	mcVersion, _ := cmd.Payload["minecraft_version"].(string)
 
 	if versionID == "" {
 		return fmt.Errorf("modpack version_id is required")
 	}
 
-	log.Printf("Changing modpack on server %s to: %s (loader: %s)", server.Name, modpackName, loader)
+	useServerPack := serverPackURL != ""
+	log.Printf("Changing modpack on server %s to: %s (loader: %s, using server pack: %v)", server.Name, modpackName, loader, useServerPack)
 
 	serverDir := server.DataDir
 
@@ -791,51 +1080,9 @@ func (a *Agent) changeModpack(cmd api.Command) error {
 		}
 	}
 
-	// Install the new modpack with progress reporting
-	modpackInstaller := minecraft.NewModpackInstaller(filepath.Join(a.config.DataDir, "cache"))
-
-	// Set up progress callback to report to cloud
-	modpackInstaller.SetProgressCallback(func(stage, message string, progress, total int, currentFile string) {
-		log.Printf("[Progress] Stage: %s, Progress: %d/%d, File: %s", stage, progress, total, currentFile)
-		if a.client != nil {
-			err := a.client.ReportModpackProgress(&api.ModpackProgressRequest{
-				ServerUUID:  cmd.ServerUUID,
-				Stage:       stage,
-				Message:     message,
-				Progress:    progress,
-				Total:       total,
-				CurrentFile: currentFile,
-			})
-			if err != nil {
-				log.Printf("[Progress] Failed to report progress: %v", err)
-			}
-		} else {
-			log.Printf("[Progress] Warning: client is nil, cannot report progress")
-		}
-	})
-
-	index, err := modpackInstaller.InstallModpack(versionID, serverDir)
-	if err != nil {
-		return fmt.Errorf("failed to install modpack: %w", err)
-	}
-
-	// Determine loader info from modpack
-	newMcVersion := index.GetMinecraftVersion()
-	loaderType := index.GetLoaderType()
-	loaderVersion := index.GetLoaderVersion()
-
-	if newMcVersion == "" {
-		newMcVersion = mcVersion
-	}
-	if loaderType == "" {
-		loaderType = loader
-	}
-
-	log.Printf("Modpack requires: Minecraft %s, %s %s", newMcVersion, loaderType, loaderVersion)
-
 	// Determine server type based on loader
 	var serverType minecraft.ServerType
-	switch loaderType {
+	switch loader {
 	case "fabric":
 		serverType = minecraft.TypeFabric
 	case "forge":
@@ -848,68 +1095,250 @@ func (a *Agent) changeModpack(cmd api.Command) error {
 		serverType = minecraft.TypeFabric
 	}
 
-	// Report loader installation progress
-	if a.client != nil {
-		a.client.ReportModpackProgress(&api.ModpackProgressRequest{
-			ServerUUID: cmd.ServerUUID,
-			Stage:      "installing_loader",
-			Message:    fmt.Sprintf("Installing %s loader...", loaderType),
-			Progress:   85,
-			Total:      100,
-		})
-	}
+	var jarPath string
 
-	// Always download the loader JAR for the modpack
-	log.Printf("Downloading %s server for Minecraft %s (loader version: %s)...", loaderType, newMcVersion, loaderVersion)
-	downloader := minecraft.NewDownloader(filepath.Join(a.config.DataDir, "cache"))
+	// If server pack URL is provided, use it (includes loader and mods)
+	if useServerPack {
+		log.Printf("Using server pack from: %s", serverPackURL)
 
-	jarPath, err := downloader.DownloadServerWithLoader(serverType, newMcVersion, loaderVersion, serverDir)
-	if err != nil {
-		log.Printf("Warning: Failed to download %s server: %v, trying alternative...", loaderType, err)
-		jarPath, err = downloader.DownloadServer(serverType, newMcVersion, serverDir)
-		if err != nil {
+		if a.client != nil {
+			a.client.ReportModpackProgress(&api.ModpackProgressRequest{
+				ServerUUID: cmd.ServerUUID,
+				Stage:      "downloading_server_pack",
+				Message:    "Downloading server pack...",
+				Progress:   10,
+				Total:      100,
+			})
+		}
+
+		// Download and extract server pack
+		serverPackInstaller := minecraft.NewModpackInstaller(filepath.Join(a.config.DataDir, "cache"), curseforgeAPIKey)
+		serverPackInstaller.SetProgressCallback(func(stage, message string, progress, total int, currentFile string) {
+			log.Printf("[Progress] Stage: %s, Progress: %d/%d, File: %s", stage, progress, total, currentFile)
 			if a.client != nil {
 				a.client.ReportModpackProgress(&api.ModpackProgressRequest{
-					ServerUUID: cmd.ServerUUID,
-					Stage:      "error",
-					Message:    fmt.Sprintf("Failed to download %s: %v", loaderType, err),
-					Progress:   0,
-					Total:      100,
+					ServerUUID:  cmd.ServerUUID,
+					Stage:       stage,
+					Message:     message,
+					Progress:    progress,
+					Total:       total,
+					CurrentFile: currentFile,
 				})
 			}
-			return fmt.Errorf("failed to download server JAR: %w", err)
+		})
+
+		err := serverPackInstaller.InstallServerPack(serverPackURL, serverPackFilename, serverDir)
+		if err != nil {
+			log.Printf("Warning: Failed to install server pack: %v, falling back to manual install", err)
+			useServerPack = false // Fall through to manual installation
+		} else {
+			log.Printf("Server pack installed successfully")
+			// Server pack includes the loader, find the run script or jar
+			// Check for startserver.sh first (used by ATM and similar modpacks)
+			startScript := filepath.Join(serverDir, "startserver.sh")
+			runScript := filepath.Join(serverDir, "run.sh")
+			if _, err := os.Stat(startScript); err == nil {
+				os.Chmod(startScript, 0755)
+				jarPath = startScript
+				log.Printf("Found startserver.sh for server pack")
+			} else if _, err := os.Stat(runScript); err == nil {
+				os.Chmod(runScript, 0755)
+				jarPath = runScript
+				log.Printf("Found run.sh for server pack")
+			} else {
+				// Look for server jar
+				patterns := []string{"forge-*.jar", "neoforge-*.jar", "fabric-*.jar", "server.jar"}
+				for _, pattern := range patterns {
+					matches, _ := filepath.Glob(filepath.Join(serverDir, pattern))
+					for _, m := range matches {
+						if !strings.Contains(filepath.Base(m), "installer") {
+							jarPath = m
+							break
+						}
+					}
+					if jarPath != "" {
+						break
+					}
+				}
+			}
 		}
 	}
-	log.Printf("Downloaded server: %s", jarPath)
+
+	// Fall back to manual installation if server pack not available or failed
+	if !useServerPack {
+		// Install the modpack with progress reporting
+		modpackInstaller := minecraft.NewModpackInstaller(filepath.Join(a.config.DataDir, "cache"), curseforgeAPIKey)
+
+		// Set up progress callback to report to cloud
+		modpackInstaller.SetProgressCallback(func(stage, message string, progress, total int, currentFile string) {
+			log.Printf("[Progress] Stage: %s, Progress: %d/%d, File: %s", stage, progress, total, currentFile)
+			if a.client != nil {
+				err := a.client.ReportModpackProgress(&api.ModpackProgressRequest{
+					ServerUUID:  cmd.ServerUUID,
+					Stage:       stage,
+					Message:     message,
+					Progress:    progress,
+					Total:       total,
+					CurrentFile: currentFile,
+				})
+				if err != nil {
+					log.Printf("[Progress] Failed to report progress: %v", err)
+				}
+			}
+		})
+
+		// Create download info if we have a direct URL
+		var downloadInfo *minecraft.ModpackDownloadInfo
+		if downloadURL != "" {
+			downloadInfo = &minecraft.ModpackDownloadInfo{
+				URL:      downloadURL,
+				Filename: filename,
+			}
+		}
+
+		modpackInfo, err := modpackInstaller.InstallModpack(versionID, serverDir, downloadInfo)
+		if err != nil {
+			return fmt.Errorf("failed to install modpack: %w", err)
+		}
+
+		// Determine loader info from modpack
+		newMcVersion := modpackInfo.GetMinecraftVersion()
+		loaderType := modpackInfo.GetLoaderType()
+		loaderVersion := modpackInfo.GetLoaderVersion()
+
+		if newMcVersion == "" {
+			newMcVersion = mcVersion
+		}
+		if loaderType == "" {
+			loaderType = loader
+		}
+		mcVersion = newMcVersion
+
+		log.Printf("Modpack requires: Minecraft %s, %s %s", newMcVersion, loaderType, loaderVersion)
+
+		// Update server type based on actual loader from modpack
+		switch loaderType {
+		case "fabric":
+			serverType = minecraft.TypeFabric
+		case "forge":
+			serverType = minecraft.TypeForge
+		case "neoforge":
+			serverType = minecraft.TypeNeoForge
+		case "quilt":
+			serverType = minecraft.TypeFabric
+		}
+
+		// Report loader installation progress
+		if a.client != nil {
+			a.client.ReportModpackProgress(&api.ModpackProgressRequest{
+				ServerUUID: cmd.ServerUUID,
+				Stage:      "installing_loader",
+				Message:    fmt.Sprintf("Installing %s loader...", loaderType),
+				Progress:   85,
+				Total:      100,
+			})
+		}
+
+		// Download the loader JAR for the modpack
+		log.Printf("Downloading %s server for Minecraft %s (loader version: %s)...", loaderType, newMcVersion, loaderVersion)
+		downloader := minecraft.NewDownloader(filepath.Join(a.config.DataDir, "cache"))
+
+		jarPath, err = downloader.DownloadServerWithLoader(serverType, newMcVersion, loaderVersion, serverDir)
+		if err != nil {
+			log.Printf("Warning: Failed to download %s server: %v, trying alternative...", loaderType, err)
+			jarPath, err = downloader.DownloadServer(serverType, newMcVersion, serverDir)
+			if err != nil {
+				if a.client != nil {
+					a.client.ReportModpackProgress(&api.ModpackProgressRequest{
+						ServerUUID: cmd.ServerUUID,
+						Stage:      "error",
+						Message:    fmt.Sprintf("Failed to download %s: %v", loaderType, err),
+						Progress:   0,
+						Total:      100,
+					})
+				}
+				return fmt.Errorf("failed to download server JAR: %w", err)
+			}
+		}
+	}
+
+	log.Printf("Server JAR/script: %s", jarPath)
 
 	// Update server config
 	server.Type = serverType
-	server.MinecraftVersion = newMcVersion
+	server.MinecraftVersion = mcVersion
 
 	// Report completion
 	if a.client != nil {
 		a.client.ReportModpackProgress(&api.ModpackProgressRequest{
 			ServerUUID: cmd.ServerUUID,
 			Stage:      "complete",
-			Message:    fmt.Sprintf("Modpack installed successfully! (%d mods)", len(index.Files)),
+			Message:    "Modpack installed successfully!",
 			Progress:   100,
 			Total:      100,
 		})
 	}
 
-	log.Printf("Modpack changed successfully on server %s! (%s %s with %d mods)",
-		server.Name, loaderType, newMcVersion, len(index.Files))
+	log.Printf("Modpack changed successfully on server %s! (%s %s)",
+		server.Name, loader, mcVersion)
 	return nil
 }
 
 func (a *Agent) getSystemInfo() map[string]interface{} {
 	hostname, _ := os.Hostname()
 
-	return map[string]interface{}{
+	info := map[string]interface{}{
 		"hostname": hostname,
-		"os":       "linux",
-		// Could add more system info here (CPU, RAM, etc.)
+		"os":       a.getOSInfo(),
 	}
+
+	// Get total RAM
+	if ramBytes := a.getTotalRAM(); ramBytes > 0 {
+		info["ram_total_mb"] = ramBytes / (1024 * 1024)
+	}
+
+	return info
+}
+
+// getOSInfo reads /etc/os-release to get OS name and version
+func (a *Agent) getOSInfo() string {
+	data, err := os.ReadFile("/etc/os-release")
+	if err != nil {
+		return "Linux"
+	}
+
+	var prettyName string
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(line, "PRETTY_NAME=") {
+			prettyName = strings.Trim(strings.TrimPrefix(line, "PRETTY_NAME="), "\"")
+			break
+		}
+	}
+
+	if prettyName != "" {
+		return prettyName
+	}
+	return "Linux"
+}
+
+// getTotalRAM reads /proc/meminfo to get total RAM in bytes
+func (a *Agent) getTotalRAM() int64 {
+	data, err := os.ReadFile("/proc/meminfo")
+	if err != nil {
+		return 0
+	}
+
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(line, "MemTotal:") {
+			fields := strings.Fields(line)
+			if len(fields) >= 2 {
+				var kb int64
+				fmt.Sscanf(fields[1], "%d", &kb)
+				return kb * 1024 // Convert KB to bytes
+			}
+		}
+	}
+	return 0
 }
 
 // sendConsoleOutput sends console lines to the cloud API
@@ -943,6 +1372,29 @@ func (a *Agent) stopConsoleBuffer(serverUUID string) {
 	if buf, ok := a.consoleBuffers[serverUUID]; ok {
 		buf.Stop()
 		delete(a.consoleBuffers, serverUUID)
+	}
+}
+
+// createPlayerEventCallback creates a callback function for player join/leave events
+func (a *Agent) createPlayerEventCallback(serverUUID string) func(event, playerName, playerUUID string) {
+	return func(event, playerName, playerUUID string) {
+		if a.client == nil {
+			return
+		}
+		// If UUID is empty, generate a placeholder based on player name
+		// The backend will look up or create the player by name
+		if playerUUID == "" {
+			playerUUID = "00000000-0000-0000-0000-000000000000"
+		}
+		err := a.client.ReportPlayerEvent(&api.PlayerEventRequest{
+			ServerUUID: serverUUID,
+			Event:      event,
+			PlayerUUID: playerUUID,
+			PlayerName: playerName,
+		})
+		if err != nil {
+			log.Printf("Failed to report player event: %v", err)
+		}
 	}
 }
 
@@ -1046,6 +1498,17 @@ func (a *Agent) changeServerType(cmd api.Command, server *minecraft.Server) erro
 
 	log.Printf("Changing server %s type from %s to %s (version %s)", server.Name, server.Type, newType, version)
 
+	// Check if this is a modpack server with startserver.sh (server pack)
+	// If so, skip downloading - the server pack already has the correct loader
+	startScript := filepath.Join(server.DataDir, "startserver.sh")
+	if _, err := os.Stat(startScript); err == nil {
+		log.Printf("Server pack detected (startserver.sh exists), skipping loader download")
+		server.Type = minecraft.ServerType(newType)
+		server.MinecraftVersion = version
+		log.Printf("Server type updated to %s (using existing server pack)", newType)
+		return nil
+	}
+
 	// Download new server JAR
 	downloader := minecraft.NewDownloader(filepath.Join(a.config.DataDir, "cache"))
 	jarPath, err := downloader.DownloadServer(minecraft.ServerType(newType), version, server.DataDir)
@@ -1065,11 +1528,18 @@ func (a *Agent) changeServerType(cmd api.Command, server *minecraft.Server) erro
 func (a *Agent) syncServerProperties(server *minecraft.Server) error {
 	properties, err := server.ReadProperties()
 	if err != nil {
+		log.Printf("Failed to read properties for %s: %v", server.Name, err)
 		return err
 	}
 
-	return a.client.SyncProperties(&api.PropertiesRequest{
+	log.Printf("Syncing %d properties for server %s", len(properties), server.Name)
+
+	err = a.client.SyncProperties(&api.PropertiesRequest{
 		ServerUUID: server.UUID,
 		Properties: properties,
 	})
+	if err != nil {
+		log.Printf("Failed to sync properties for %s: %v", server.Name, err)
+	}
+	return err
 }

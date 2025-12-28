@@ -6,7 +6,7 @@ services:
     network_mode: host
 
     environment:
-      - RSC_LICENSE_KEY=RSC-HCX3-5VNQ-C6CA-HO19
+      - RSC_LICENSE_KEY=RSC-LFRP-IXZ3-QLHL-QIQ8
 
     volumes:
       - ./data:/data

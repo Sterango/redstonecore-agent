@@ -47,6 +47,7 @@ type Server struct {
 	AllocatedRAM     int
 	Status           ServerStatus
 	PlayerCount      int
+	CurrentPlayers   []string
 	DataDir          string
 	JarFile          string
 
@@ -54,7 +55,9 @@ type Server struct {
 	stdin         io.WriteCloser
 	consoleBuffer []string
 	consoleMutex  sync.Mutex
+	playersMutex  sync.Mutex
 	onConsoleLine func(line string)
+	onPlayerEvent func(event, playerName, playerUUID string)
 	stopChan      chan struct{}
 }
 
@@ -68,6 +71,7 @@ type ServerConfig struct {
 	AllocatedRAM     int
 	DataDir          string
 	OnConsoleLine    func(line string)
+	OnPlayerEvent    func(event, playerName, playerUUID string)
 }
 
 func NewServer(cfg ServerConfig) *Server {
@@ -82,8 +86,10 @@ func NewServer(cfg ServerConfig) *Server {
 		DataDir:          cfg.DataDir,
 		Status:           StatusStopped,
 		PlayerCount:      0,
+		CurrentPlayers:   make([]string, 0),
 		consoleBuffer:    make([]string, 0, 1000),
 		onConsoleLine:    cfg.OnConsoleLine,
+		onPlayerEvent:    cfg.OnPlayerEvent,
 	}
 }
 
@@ -241,6 +247,15 @@ func (s *Server) GetConsoleBuffer() []string {
 	return result
 }
 
+func (s *Server) GetCurrentPlayers() []string {
+	s.playersMutex.Lock()
+	defer s.playersMutex.Unlock()
+
+	result := make([]string, len(s.CurrentPlayers))
+	copy(result, s.CurrentPlayers)
+	return result
+}
+
 func (s *Server) readOutput(reader io.Reader) {
 	scanner := bufio.NewScanner(reader)
 	for scanner.Scan() {
@@ -265,13 +280,65 @@ func (s *Server) readOutput(reader io.Reader) {
 }
 
 func (s *Server) parseConsoleLine(line string) {
-	// Parse player join/leave messages to update player count
-	// This is a simple implementation - could be improved
+	// Parse player join/leave messages to update player count and names
+	// Format: "[HH:MM:SS] [Server thread/INFO] [minecraft/MinecraftServer]: PlayerName joined the game"
 	if strings.Contains(line, "joined the game") {
-		s.PlayerCount++
+		// Extract player name - it's the word before "joined the game"
+		parts := strings.Split(line, " joined the game")
+		if len(parts) > 0 {
+			// Get the last word before "joined the game" which is the player name
+			words := strings.Fields(parts[0])
+			if len(words) > 0 {
+				playerName := words[len(words)-1]
+				// Clean up any trailing colons or brackets
+				playerName = strings.TrimSuffix(playerName, ":")
+
+				s.playersMutex.Lock()
+				// Add player if not already in list
+				found := false
+				for _, p := range s.CurrentPlayers {
+					if p == playerName {
+						found = true
+						break
+					}
+				}
+				if !found {
+					s.CurrentPlayers = append(s.CurrentPlayers, playerName)
+				}
+				s.PlayerCount = len(s.CurrentPlayers)
+				s.playersMutex.Unlock()
+
+				// Notify callback about player join
+				if s.onPlayerEvent != nil {
+					s.onPlayerEvent("join", playerName, "")
+				}
+			}
+		}
 	} else if strings.Contains(line, "left the game") {
-		if s.PlayerCount > 0 {
-			s.PlayerCount--
+		// Extract player name
+		parts := strings.Split(line, " left the game")
+		if len(parts) > 0 {
+			words := strings.Fields(parts[0])
+			if len(words) > 0 {
+				playerName := words[len(words)-1]
+				playerName = strings.TrimSuffix(playerName, ":")
+
+				s.playersMutex.Lock()
+				// Remove player from list
+				for i, p := range s.CurrentPlayers {
+					if p == playerName {
+						s.CurrentPlayers = append(s.CurrentPlayers[:i], s.CurrentPlayers[i+1:]...)
+						break
+					}
+				}
+				s.PlayerCount = len(s.CurrentPlayers)
+				s.playersMutex.Unlock()
+
+				// Notify callback about player leave
+				if s.onPlayerEvent != nil {
+					s.onPlayerEvent("leave", playerName, "")
+				}
+			}
 		}
 	}
 
@@ -303,7 +370,13 @@ func (s *Server) monitorProcess() {
 }
 
 func (s *Server) findJarFile() (string, error) {
-	// First check for run.sh (used by modern Forge/NeoForge)
+	// First check for startserver.sh (used by modpack server packs like ATM)
+	startScript := filepath.Join(s.DataDir, "startserver.sh")
+	if _, err := os.Stat(startScript); err == nil {
+		return startScript, nil
+	}
+
+	// Check for run.sh (used by modern Forge/NeoForge)
 	runScript := filepath.Join(s.DataDir, "run.sh")
 	if _, err := os.Stat(runScript); err == nil {
 		return runScript, nil

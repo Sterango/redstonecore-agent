@@ -119,15 +119,16 @@ type SyncServersRequest struct {
 }
 
 type SyncServer struct {
-	UUID             string `json:"uuid,omitempty"`
-	Name             string `json:"name"`
-	Type             string `json:"type"`
-	MinecraftVersion string `json:"minecraft_version,omitempty"`
-	Port             int    `json:"port"`
-	MaxPlayers       int    `json:"max_players"`
-	AllocatedRAM     int    `json:"allocated_ram_mb"`
-	Status           string `json:"status"`
-	PlayerCount      int    `json:"player_count,omitempty"`
+	UUID             string   `json:"uuid,omitempty"`
+	Name             string   `json:"name"`
+	Type             string   `json:"type"`
+	MinecraftVersion string   `json:"minecraft_version,omitempty"`
+	Port             int      `json:"port"`
+	MaxPlayers       int      `json:"max_players"`
+	AllocatedRAM     int      `json:"allocated_ram_mb"`
+	Status           string   `json:"status"`
+	PlayerCount      int      `json:"player_count,omitempty"`
+	CurrentPlayers   []string `json:"current_players,omitempty"`
 }
 
 type SyncServersResponse struct {
@@ -233,6 +234,38 @@ type ModpackProgressRequest struct {
 // ReportModpackProgress reports modpack installation progress
 func (c *Client) ReportModpackProgress(req *ModpackProgressRequest) error {
 	_, err := c.post("/api/v1/instance/modpack/progress", req, true)
+	return err
+}
+
+// BackupProgressRequest reports backup creation progress
+type BackupProgressRequest struct {
+	ServerUUID string `json:"server_uuid"`
+	BackupUUID string `json:"backup_uuid"`
+	Stage      string `json:"stage"` // preparing, archiving, complete, error
+	Message    string `json:"message"`
+	Progress   int    `json:"progress"`
+	Total      int    `json:"total"`
+}
+
+// ReportBackupProgress reports backup creation progress
+func (c *Client) ReportBackupProgress(req *BackupProgressRequest) error {
+	_, err := c.post("/api/v1/instance/backup/progress", req, true)
+	return err
+}
+
+// BackupCompleteRequest reports backup completion
+type BackupCompleteRequest struct {
+	ServerUUID string `json:"server_uuid"`
+	BackupUUID string `json:"backup_uuid"`
+	Success    bool   `json:"success"`
+	Filename   string `json:"filename,omitempty"`
+	Size       int64  `json:"size,omitempty"`
+	Error      string `json:"error,omitempty"`
+}
+
+// ReportBackupComplete reports backup completion
+func (c *Client) ReportBackupComplete(req *BackupCompleteRequest) error {
+	_, err := c.post("/api/v1/instance/backup/complete", req, true)
 	return err
 }
 

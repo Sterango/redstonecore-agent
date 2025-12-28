@@ -34,7 +34,7 @@ type Config struct {
 func Load(configPath string) (*Config, error) {
 	cfg := &Config{
 		CloudURL:     "https://redstonecore.net",
-		SFTPRelayURL: "wss://redstonecore.net:8022/sftp",
+		SFTPRelayURL: "wss://redstonecore.net/relay/sftp",
 		DataDir:      "/data",
 		ConfigDir:    "/config",
 		Servers:      []ServerConfig{},

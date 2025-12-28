@@ -7,17 +7,29 @@ import (
 	"github.com/sterango/redstonecore-agent/internal/api"
 )
 
+// ServerAnalytics contains analytics data for a single server
+type ServerAnalytics struct {
+	UUID         string
+	PlayerCount  int
+	TPS          float64
+	MemoryUsedMB int
+	MemoryMaxMB  int
+	CPUPercent   float64
+}
+
 type ServerStatusProvider interface {
 	GetServerStatuses() []api.ServerStatus
+	GetServerAnalytics() []ServerAnalytics
 	ExecuteCommand(cmd api.Command) error
 }
 
 type Heartbeat struct {
-	client   *api.Client
-	provider ServerStatusProvider
-	interval time.Duration
-	stopChan chan struct{}
-	doneChan chan struct{}
+	client           *api.Client
+	provider         ServerStatusProvider
+	interval         time.Duration
+	analyticsCounter int
+	stopChan         chan struct{}
+	doneChan         chan struct{}
 }
 
 func New(client *api.Client, provider ServerStatusProvider, interval time.Duration) *Heartbeat {
@@ -55,6 +67,13 @@ func (h *Heartbeat) run() {
 		select {
 		case <-ticker.C:
 			h.sendHeartbeat()
+
+			// Send analytics every 30 heartbeats (30 seconds with 1s interval)
+			h.analyticsCounter++
+			if h.analyticsCounter >= 30 {
+				h.analyticsCounter = 0
+				h.sendAnalytics()
+			}
 		case <-h.stopChan:
 			return
 		}
@@ -96,5 +115,24 @@ func (h *Heartbeat) executeCommand(cmd api.Command) {
 
 	if reportErr := h.client.ReportCommandResult(result); reportErr != nil {
 		log.Printf("[Heartbeat] Failed to report command result: %v", reportErr)
+	}
+}
+
+func (h *Heartbeat) sendAnalytics() {
+	analytics := h.provider.GetServerAnalytics()
+
+	for _, a := range analytics {
+		req := &api.AnalyticsRequest{
+			ServerUUID:   a.UUID,
+			PlayerCount:  a.PlayerCount,
+			TPS:          a.TPS,
+			MemoryUsedMB: a.MemoryUsedMB,
+			MemoryMaxMB:  a.MemoryMaxMB,
+			CPUPercent:   a.CPUPercent,
+		}
+
+		if err := h.client.ReportAnalytics(req); err != nil {
+			log.Printf("[Heartbeat] Failed to report analytics for server %s: %v", a.UUID, err)
+		}
 	}
 }

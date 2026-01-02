@@ -33,7 +33,7 @@ Log in to [redstonecore.net](https://redstonecore.net) to:
 - Create and manage servers
 - View real-time console output
 - Start, stop, and restart servers
-- Install modpacks from Modrinth
+- Install modpacks from CurseForge
 - Manage plugins and mods
 - Monitor server performance
 - Access files via web file manager or SFTP
@@ -123,13 +123,13 @@ Access your server files via SFTP without opening any ports on your machine. The
 | Setting | Value |
 |---------|-------|
 | Host | `redstonecore.net` |
-| Port | `2222` |
+| Port | `2224` |
 | Username | Your server's UUID (shown in web console) |
 | Password | Your account password or instance API token |
 
 Example with command line:
 ```bash
-sftp -P 2222 5b2f65b5-aace-438d-9347-d9acf555fe48@redstonecore.net
+sftp -P 2224 5b2f65b5-aace-438d-9347-d9acf555fe48@redstonecore.net
 ```
 
 ### How it works

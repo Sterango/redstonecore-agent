@@ -625,6 +625,8 @@ func (a *Agent) ExecuteCommand(cmd api.Command) error {
 		return server.SendCommand(input)
 	case "install_plugin":
 		return a.installPlugin(cmd, server)
+	case "update_plugin":
+		return a.updatePlugin(cmd, server)
 	case "delete_plugin":
 		return a.deletePlugin(cmd, server)
 	case "update_properties":
@@ -1448,6 +1450,74 @@ func (a *Agent) deletePlugin(cmd api.Command, server *minecraft.Server) error {
 	}
 
 	log.Printf("Plugin %s deleted successfully!", filename)
+	return nil
+}
+
+// updatePlugin updates a plugin by downloading from Modrinth and replacing the old file
+func (a *Agent) updatePlugin(cmd api.Command, server *minecraft.Server) error {
+	if cmd.Payload == nil {
+		return fmt.Errorf("update_plugin requires payload")
+	}
+
+	oldFilename, _ := cmd.Payload["old_filename"].(string)
+	newFilename, _ := cmd.Payload["new_filename"].(string)
+	downloadURL, _ := cmd.Payload["download_url"].(string)
+
+	if newFilename == "" || downloadURL == "" {
+		return fmt.Errorf("new_filename and download_url are required")
+	}
+
+	log.Printf("Updating plugin on server %s: %s -> %s", server.Name, oldFilename, newFilename)
+
+	pluginsDir := filepath.Join(server.DataDir, "plugins")
+
+	// Delete old plugin file if it has a different name
+	if oldFilename != "" && oldFilename != newFilename {
+		oldPath := filepath.Join(pluginsDir, oldFilename)
+		if err := os.Remove(oldPath); err != nil && !os.IsNotExist(err) {
+			log.Printf("Warning: Failed to remove old plugin file %s: %v", oldFilename, err)
+		} else {
+			log.Printf("Removed old plugin file: %s", oldFilename)
+		}
+	}
+
+	// Download new plugin directly from Modrinth
+	destPath := filepath.Join(pluginsDir, newFilename)
+
+	// Create HTTP client for downloading
+	client := &http.Client{Timeout: 120 * time.Second}
+	req, err := http.NewRequest("GET", downloadURL, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create download request: %w", err)
+	}
+
+	// Set User-Agent header for Modrinth API compliance
+	req.Header.Set("User-Agent", "RedstoneCore-Agent/1.0")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to download plugin: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("failed to download plugin: HTTP %d", resp.StatusCode)
+	}
+
+	// Create destination file
+	destFile, err := os.Create(destPath)
+	if err != nil {
+		return fmt.Errorf("failed to create plugin file: %w", err)
+	}
+	defer destFile.Close()
+
+	// Copy the content
+	_, err = io.Copy(destFile, resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to write plugin file: %w", err)
+	}
+
+	log.Printf("Plugin updated successfully: %s", newFilename)
 	return nil
 }
 

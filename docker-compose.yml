@@ -32,7 +32,7 @@ services:
     ports:
       # Minecraft server ports
       # Adjust based on your server configuration
-      - "25565-25575:25565-25575"
+      - "25565-25574:25565-25574"
 
     # Resource limits (adjust based on your server needs)
     deploy:

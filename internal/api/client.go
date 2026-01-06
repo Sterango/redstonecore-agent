@@ -74,6 +74,7 @@ func (c *Client) Register(req *RegisterRequest) (*RegisterResponse, error) {
 // HeartbeatRequest is sent periodically to report status
 type HeartbeatRequest struct {
 	Status     string                 `json:"status"`
+	Version    string                 `json:"version,omitempty"`
 	SystemInfo map[string]interface{} `json:"system_info,omitempty"`
 	Servers    []ServerStatus         `json:"servers,omitempty"`
 }
@@ -86,9 +87,11 @@ type ServerStatus struct {
 
 // HeartbeatResponse contains pending commands
 type HeartbeatResponse struct {
-	Success   bool      `json:"success"`
-	Timestamp string    `json:"timestamp"`
-	Commands  []Command `json:"commands"`
+	Success         bool      `json:"success"`
+	Timestamp       string    `json:"timestamp"`
+	Commands        []Command `json:"commands"`
+	UpdateAvailable bool      `json:"update_available"`
+	LatestVersion   string    `json:"latest_version,omitempty"`
 }
 
 type Command struct {

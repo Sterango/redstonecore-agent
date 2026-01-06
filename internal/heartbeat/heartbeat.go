@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/sterango/redstonecore-agent/internal/api"
+	"github.com/sterango/redstonecore-agent/internal/version"
 )
 
 // ServerAnalytics contains analytics data for a single server
@@ -24,12 +25,13 @@ type ServerStatusProvider interface {
 }
 
 type Heartbeat struct {
-	client           *api.Client
-	provider         ServerStatusProvider
-	interval         time.Duration
-	analyticsCounter int
-	stopChan         chan struct{}
-	doneChan         chan struct{}
+	client            *api.Client
+	provider          ServerStatusProvider
+	interval          time.Duration
+	analyticsCounter  int
+	updateNotified    bool
+	stopChan          chan struct{}
+	doneChan          chan struct{}
 }
 
 func New(client *api.Client, provider ServerStatusProvider, interval time.Duration) *Heartbeat {
@@ -83,6 +85,7 @@ func (h *Heartbeat) run() {
 func (h *Heartbeat) sendHeartbeat() {
 	req := &api.HeartbeatRequest{
 		Status:  "online",
+		Version: version.Version,
 		Servers: h.provider.GetServerStatuses(),
 	}
 
@@ -90,6 +93,12 @@ func (h *Heartbeat) sendHeartbeat() {
 	if err != nil {
 		log.Printf("[Heartbeat] Error: %v", err)
 		return
+	}
+
+	// Check for available updates (only notify once per session)
+	if resp.UpdateAvailable && !h.updateNotified {
+		log.Printf("[UPDATE] A new version (%s) is available! Current: %s. Run './rsc update' to upgrade.", resp.LatestVersion, version.Version)
+		h.updateNotified = true
 	}
 
 	// Process any pending commands

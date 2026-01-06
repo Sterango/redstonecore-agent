@@ -8,11 +8,7 @@ import (
 
 	"github.com/sterango/redstonecore-agent/internal/agent"
 	"github.com/sterango/redstonecore-agent/internal/config"
-)
-
-var (
-	version   = "1.0.0"
-	buildTime = "unknown"
+	"github.com/sterango/redstonecore-agent/internal/version"
 )
 
 func main() {
@@ -22,7 +18,7 @@ func main() {
 	flag.Parse()
 
 	if *showVersion {
-		fmt.Printf("RedstoneCore Agent v%s (built %s)\n", version, buildTime)
+		fmt.Printf("RedstoneCore Agent v%s (built %s)\n", version.Version, version.BuildTime)
 		os.Exit(0)
 	}
 
@@ -30,7 +26,7 @@ func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 	log.SetPrefix("[RSC] ")
 
-	log.Printf("RedstoneCore Agent v%s starting...", version)
+	log.Printf("RedstoneCore Agent v%s starting...", version.Version)
 
 	// Load configuration
 	cfg, err := config.Load(*configPath)

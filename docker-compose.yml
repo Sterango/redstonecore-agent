@@ -29,10 +29,13 @@ services:
       # Configuration files
       - ./config:/config
 
-    ports:
-      # Minecraft server ports
-      # Adjust based on your server configuration
-      - "25565-25574:25565-25574"
+    # Use host networking so agent can reach local services
+    network_mode: host
+
+    # ports:
+    #   # Minecraft server ports
+    #   # Adjust based on your server configuration
+    #   - "25565-25574:25565-25574"
 
     # Resource limits (adjust based on your server needs)
     deploy:

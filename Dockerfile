@@ -29,7 +29,9 @@ RUN apk add --no-cache \
     ca-certificates \
     curl \
     bash \
-    tzdata
+    tzdata \
+    docker-cli \
+    docker-cli-compose
 
 # Create non-root user for security
 RUN addgroup -S rsc && adduser -S rsc -G rsc

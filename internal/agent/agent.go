@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -595,6 +596,11 @@ func (a *Agent) ExecuteCommand(cmd api.Command) error {
 		return a.changeModpack(cmd)
 	}
 
+	// Handle update_agent command (self-update via Docker)
+	if cmd.Command == "update_agent" {
+		return a.updateAgent(cmd)
+	}
+
 	a.serversMu.RLock()
 	server, ok := a.servers[cmd.ServerUUID]
 	a.serversMu.RUnlock()
@@ -749,6 +755,42 @@ func (a *Agent) deleteServer(cmd api.Command) error {
 	}
 
 	log.Printf("Server %s deleted successfully!", server.Name)
+	return nil
+}
+
+// updateAgent handles the update_agent command from cloud
+// This function triggers a self-update via Docker
+func (a *Agent) updateAgent(cmd api.Command) error {
+	log.Printf("[Update] Starting self-update...")
+
+	// Pull the latest image
+	log.Printf("[Update] Pulling latest image...")
+	pullCmd := exec.Command("docker", "pull", "ghcr.io/sterango/redstonecore-agent:latest")
+	pullCmd.Stdout = os.Stdout
+	pullCmd.Stderr = os.Stderr
+	if err := pullCmd.Run(); err != nil {
+		return fmt.Errorf("failed to pull latest image: %w", err)
+	}
+
+	log.Printf("[Update] Image pulled successfully. Restarting container...")
+
+	// Restart with the new image
+	// Use --force-recreate to ensure the new image is used
+	// We start this async because docker compose up will restart this container
+	restartCmd := exec.Command("docker", "compose", "-f", "/docker-compose.yml", "up", "-d", "--force-recreate")
+	restartCmd.Stdout = os.Stdout
+	restartCmd.Stderr = os.Stderr
+
+	// Start the command but don't wait - we'll be killed when the container restarts
+	if err := restartCmd.Start(); err != nil {
+		return fmt.Errorf("failed to start restart command: %w", err)
+	}
+
+	log.Printf("[Update] Restart command initiated. Container will restart shortly...")
+
+	// Give the restart command a moment to begin
+	time.Sleep(2 * time.Second)
+
 	return nil
 }
 

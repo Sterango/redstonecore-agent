@@ -44,8 +44,7 @@ func (d *Downloader) DownloadServer(serverType ServerType, version string, destD
 	case TypeBungeeCord:
 		return d.downloadWaterfall(version, destDir)
 	case TypeSpigot:
-		// Spigot requires BuildTools, recommend Paper instead
-		return "", fmt.Errorf("Spigot requires BuildTools to compile. Consider using Paper instead (fully Spigot-compatible)")
+		return d.downloadSpigot(version, destDir)
 	default:
 		return "", fmt.Errorf("automatic download not supported for server type: %s", serverType)
 	}
@@ -823,4 +822,95 @@ func (d *Downloader) downloadWaterfall(mcVersion string, destDir string) (string
 	}
 
 	return destPath, nil
+}
+
+// downloadSpigot builds Spigot using BuildTools
+func (d *Downloader) downloadSpigot(version string, destDir string) (string, error) {
+	// Create a build directory in cache
+	buildDir := filepath.Join(d.cacheDir, "spigot-build")
+	if err := os.MkdirAll(buildDir, 0755); err != nil {
+		return "", fmt.Errorf("failed to create build directory: %w", err)
+	}
+
+	// Check if we already have a cached build for this version
+	cachedJar := filepath.Join(d.cacheDir, fmt.Sprintf("spigot-%s.jar", version))
+	if _, err := os.Stat(cachedJar); err == nil {
+		// Use cached build
+		destPath := filepath.Join(destDir, "server.jar")
+		if err := d.copyFile(cachedJar, destPath); err != nil {
+			return "", fmt.Errorf("failed to copy cached Spigot JAR: %w", err)
+		}
+		return destPath, nil
+	}
+
+	// Download BuildTools.jar
+	buildToolsURL := "https://hub.spigotmc.org/jenkins/job/BuildTools/lastSuccessfulBuild/artifact/target/BuildTools.jar"
+	buildToolsPath := filepath.Join(buildDir, "BuildTools.jar")
+
+	if err := d.downloadFile(buildToolsURL, buildToolsPath); err != nil {
+		return "", fmt.Errorf("failed to download BuildTools: %w", err)
+	}
+
+	// Run BuildTools
+	// java -jar BuildTools.jar --rev <version>
+	cmd := exec.Command("java", "-jar", "BuildTools.jar", "--rev", version)
+	cmd.Dir = buildDir
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("BuildTools failed: %w\nOutput: %s", err, string(output))
+	}
+
+	// Find the built spigot jar
+	spigotJarPattern := fmt.Sprintf("spigot-%s*.jar", version)
+	matches, _ := filepath.Glob(filepath.Join(buildDir, spigotJarPattern))
+	if len(matches) == 0 {
+		// Try alternate pattern
+		matches, _ = filepath.Glob(filepath.Join(buildDir, "spigot-*.jar"))
+	}
+
+	if len(matches) == 0 {
+		return "", fmt.Errorf("BuildTools completed but spigot JAR not found")
+	}
+
+	builtJar := matches[0]
+
+	// Cache the built jar for future use
+	if err := d.copyFile(builtJar, cachedJar); err != nil {
+		// Non-fatal, just log
+		fmt.Printf("Warning: Failed to cache Spigot JAR: %v\n", err)
+	}
+
+	// Copy to destination
+	destPath := filepath.Join(destDir, "server.jar")
+	if err := d.copyFile(builtJar, destPath); err != nil {
+		return "", fmt.Errorf("failed to copy Spigot JAR: %w", err)
+	}
+
+	// Clean up build directory (keep cache)
+	os.RemoveAll(buildDir)
+
+	return destPath, nil
+}
+
+// copyFile copies a file from src to dst
+func (d *Downloader) copyFile(src, dst string) error {
+	srcFile, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer srcFile.Close()
+
+	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
+		return err
+	}
+
+	dstFile, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer dstFile.Close()
+
+	_, err = io.Copy(dstFile, srcFile)
+	return err
 }

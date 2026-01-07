@@ -639,6 +639,8 @@ func (a *Agent) ExecuteCommand(cmd api.Command) error {
 		return a.updateProperties(cmd, server)
 	case "change_server_type":
 		return a.changeServerType(cmd, server)
+	case "update_proxy_config":
+		return a.updateProxyConfig(cmd, server)
 	case "files_list", "files_read", "files_write", "files_delete", "files_rename", "files_mkdir", "files_upload", "files_download":
 		// File operations are handled async and report their own results
 		go a.handleFileOperation(cmd, server)
@@ -1654,4 +1656,47 @@ func (a *Agent) syncServerProperties(server *minecraft.Server) error {
 		log.Printf("Failed to sync properties for %s: %v", server.Name, err)
 	}
 	return err
+}
+
+// updateProxyConfig writes the proxy configuration file (BungeeCord config.yml or Velocity velocity.toml)
+func (a *Agent) updateProxyConfig(cmd api.Command, server *minecraft.Server) error {
+	if cmd.Payload == nil {
+		return fmt.Errorf("update_proxy_config requires payload")
+	}
+
+	configContent, _ := cmd.Payload["config_content"].(string)
+	configFilename, _ := cmd.Payload["config_filename"].(string)
+
+	if configContent == "" || configFilename == "" {
+		return fmt.Errorf("config_content and config_filename are required")
+	}
+
+	log.Printf("Updating proxy config for %s: %s", server.Name, configFilename)
+
+	// Write the config file to the server's data directory
+	configPath := filepath.Join(server.DataDir, configFilename)
+
+	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+		return fmt.Errorf("failed to write proxy config: %w", err)
+	}
+
+	log.Printf("Proxy config %s updated successfully for server %s", configFilename, server.Name)
+
+	// If the server is running, send a reload command
+	if server.Status == minecraft.StatusRunning {
+		configType, _ := cmd.Payload["config_type"].(string)
+		var reloadCmd string
+		if configType == "velocity" {
+			reloadCmd = "velocity reload"
+		} else {
+			reloadCmd = "greload"
+		}
+		log.Printf("Server is running, sending reload command: %s", reloadCmd)
+		if err := server.SendCommand(reloadCmd); err != nil {
+			log.Printf("Warning: Failed to send reload command: %v", err)
+			// Don't fail the whole operation if reload fails
+		}
+	}
+
+	return nil
 }

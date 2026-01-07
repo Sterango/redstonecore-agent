@@ -6,7 +6,7 @@ To release a new version:
 
 1. Update the version in `Dockerfile`:
    ```dockerfile
-   -ldflags="-w -s -X main.version=X.Y.Z -X main.buildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+   -ldflags="-w -s -X github.com/sterango/redstonecore-agent/internal/version.Version=X.Y.Z -X github.com/sterango/redstonecore-agent/internal/version.BuildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
    ```
 
 2. Update `AGENT_LATEST_VERSION` in the web app `.env`:

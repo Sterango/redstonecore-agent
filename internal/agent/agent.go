@@ -1772,9 +1772,19 @@ func (a *Agent) configureVelocityForwarding(cmd api.Command, server *minecraft.S
 	propsPath := filepath.Join(server.DataDir, "server.properties")
 	if propsData, err := os.ReadFile(propsPath); err == nil {
 		propsStr := string(propsData)
-		// Replace online-mode=true with online-mode=false
+		modified := false
+
 		if strings.Contains(propsStr, "online-mode=true") {
+			// Replace online-mode=true with online-mode=false
 			propsStr = strings.Replace(propsStr, "online-mode=true", "online-mode=false", 1)
+			modified = true
+		} else if !strings.Contains(propsStr, "online-mode=") {
+			// Add online-mode=false if not present
+			propsStr = strings.TrimRight(propsStr, "\n") + "\nonline-mode=false\n"
+			modified = true
+		}
+
+		if modified {
 			if err := os.WriteFile(propsPath, []byte(propsStr), 0644); err != nil {
 				log.Printf("Warning: Failed to update server.properties: %v", err)
 			} else {

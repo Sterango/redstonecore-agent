@@ -49,30 +49,6 @@ Log in to [redstonecore.net](https://redstonecore.net) to:
 | `RSC_SFTP_RELAY_URL` | SFTP relay WebSocket URL | `wss://redstonecore.net:8022/sftp` |
 | `TZ` | Timezone | UTC |
 
-### Optional: config.yaml
-
-You can pre-configure servers by creating `config/config.yaml`:
-
-```yaml
-servers:
-  - name: "Survival"
-    type: "paper"
-    minecraft_version: "1.21"
-    port: 25565
-    max_players: 20
-    ram: 4096
-    auto_start: true
-
-  - name: "Creative"
-    type: "paper"
-    minecraft_version: "1.21"
-    port: 25566
-    max_players: 10
-    ram: 2048
-```
-
-Or simply create servers from the web console - no config file needed!
-
 ### Server Types
 
 | Type | Description |

@@ -1,5 +1,13 @@
 # RedstoneCore Agent
 
+## Versioning Scheme
+
+Use semantic versioning with patch numbers 0-9:
+- `1.3.0` → `1.3.1` → ... → `1.3.9` → `1.4.0`
+- Increment the patch number (last digit) for minor fixes/features
+- When patch reaches 9, bump the minor version and reset patch to 0
+- Example: Current is `1.3.0`, next would be `1.3.1`, not `1.4.0`
+
 ## Releasing a New Version
 
 To release a new version:

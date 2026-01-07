@@ -779,21 +779,23 @@ func (a *Agent) updateAgent(cmd api.Command) error {
 
 	log.Printf("[Update] Image pulled successfully. Restarting container...")
 
-	// Restart with the new image
-	// Use --force-recreate to ensure the new image is used
-	// We start this async because docker compose up will restart this container
-	restartCmd := exec.Command("docker", "compose", "-p", "redstonecore", "-f", "/docker-compose.yml", "up", "-d", "--force-recreate")
+	// Use a temporary alpine container to run docker compose
+	// This ensures the restart command survives when this container is killed
+	restartCmd := exec.Command("docker", "run", "--rm", "-d",
+		"-v", "/var/run/docker.sock:/var/run/docker.sock",
+		"-v", "/docker-compose.yml:/docker-compose.yml:ro",
+		"docker/compose:latest",
+		"-p", "redstonecore", "-f", "/docker-compose.yml", "up", "-d", "--force-recreate")
 	restartCmd.Stdout = os.Stdout
 	restartCmd.Stderr = os.Stderr
 
-	// Start the command but don't wait - we'll be killed when the container restarts
-	if err := restartCmd.Start(); err != nil {
+	if err := restartCmd.Run(); err != nil {
 		return fmt.Errorf("failed to start restart command: %w", err)
 	}
 
 	log.Printf("[Update] Restart command initiated. Container will restart shortly...")
 
-	// Give the restart command a moment to begin
+	// Give Docker a moment to start the restart process
 	time.Sleep(2 * time.Second)
 
 	return nil

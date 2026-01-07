@@ -779,7 +779,7 @@ func (a *Agent) updateAgent(cmd api.Command) error {
 	// Restart with the new image
 	// Use --force-recreate to ensure the new image is used
 	// We start this async because docker compose up will restart this container
-	restartCmd := exec.Command("docker", "compose", "-f", "/docker-compose.yml", "up", "-d", "--force-recreate")
+	restartCmd := exec.Command("docker", "compose", "-p", "redstonecore", "-f", "/docker-compose.yml", "up", "-d", "--force-recreate")
 	restartCmd.Stdout = os.Stdout
 	restartCmd.Stderr = os.Stderr
 

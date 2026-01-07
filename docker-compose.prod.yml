@@ -8,6 +8,7 @@ services:
     container_name: redstonecore
     restart: unless-stopped
     network_mode: host
+    user: root
 
     environment:
       # Required: Your license key from redstonecore.net
@@ -22,6 +23,12 @@ services:
 
       # Configuration files
       - ./config:/config
+
+      # Docker socket for self-updates
+      - /var/run/docker.sock:/var/run/docker.sock
+
+      # Docker compose file for restart commands
+      - ./docker-compose.yml:/docker-compose.yml:ro
 
     # Resource limits (adjust based on your needs)
     deploy:

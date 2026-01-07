@@ -20,6 +20,7 @@ import (
 	"github.com/sterango/redstonecore-agent/internal/heartbeat"
 	"github.com/sterango/redstonecore-agent/internal/minecraft"
 	"github.com/sterango/redstonecore-agent/internal/sftp"
+	"gopkg.in/yaml.v3"
 )
 
 // Ensure Agent implements the heartbeat.ServerStatusProvider interface
@@ -641,6 +642,8 @@ func (a *Agent) ExecuteCommand(cmd api.Command) error {
 		return a.changeServerType(cmd, server)
 	case "update_proxy_config":
 		return a.updateProxyConfig(cmd, server)
+	case "configure_velocity_forwarding":
+		return a.configureVelocityForwarding(cmd, server)
 	case "files_list", "files_read", "files_write", "files_delete", "files_rename", "files_mkdir", "files_upload", "files_download":
 		// File operations are handled async and report their own results
 		go a.handleFileOperation(cmd, server)
@@ -1695,6 +1698,88 @@ func (a *Agent) updateProxyConfig(cmd api.Command, server *minecraft.Server) err
 		if err := server.SendCommand(reloadCmd); err != nil {
 			log.Printf("Warning: Failed to send reload command: %v", err)
 			// Don't fail the whole operation if reload fails
+		}
+	}
+
+	return nil
+}
+
+// configureVelocityForwarding configures a backend server for Velocity modern forwarding
+func (a *Agent) configureVelocityForwarding(cmd api.Command, server *minecraft.Server) error {
+	if cmd.Payload == nil {
+		return fmt.Errorf("configure_velocity_forwarding requires payload")
+	}
+
+	forwardingSecret, _ := cmd.Payload["forwarding_secret"].(string)
+	serverType, _ := cmd.Payload["server_type"].(string)
+
+	if forwardingSecret == "" {
+		return fmt.Errorf("forwarding_secret is required")
+	}
+
+	log.Printf("Configuring Velocity forwarding for %s (type: %s)", server.Name, serverType)
+
+	// Create config directory if it doesn't exist
+	configDir := filepath.Join(server.DataDir, "config")
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		return fmt.Errorf("failed to create config directory: %w", err)
+	}
+
+	// Write paper-global.yml with velocity forwarding enabled
+	paperGlobalPath := filepath.Join(configDir, "paper-global.yml")
+
+	// Check if file exists and read it
+	var config map[string]interface{}
+	if data, err := os.ReadFile(paperGlobalPath); err == nil {
+		if err := yaml.Unmarshal(data, &config); err != nil {
+			log.Printf("Warning: Failed to parse existing paper-global.yml, creating new: %v", err)
+			config = make(map[string]interface{})
+		}
+	} else {
+		config = make(map[string]interface{})
+	}
+
+	// Ensure proxies section exists
+	if config["proxies"] == nil {
+		config["proxies"] = make(map[string]interface{})
+	}
+	proxies, ok := config["proxies"].(map[string]interface{})
+	if !ok {
+		proxies = make(map[string]interface{})
+		config["proxies"] = proxies
+	}
+
+	// Set velocity configuration
+	proxies["velocity"] = map[string]interface{}{
+		"enabled":     true,
+		"online-mode": true,
+		"secret":      forwardingSecret,
+	}
+
+	// Write the config back
+	data, err := yaml.Marshal(config)
+	if err != nil {
+		return fmt.Errorf("failed to marshal paper-global.yml: %w", err)
+	}
+
+	if err := os.WriteFile(paperGlobalPath, data, 0644); err != nil {
+		return fmt.Errorf("failed to write paper-global.yml: %w", err)
+	}
+
+	log.Printf("Velocity forwarding configured successfully for server %s", server.Name)
+
+	// Also update server.properties to use offline-mode (Velocity handles auth)
+	propsPath := filepath.Join(server.DataDir, "server.properties")
+	if propsData, err := os.ReadFile(propsPath); err == nil {
+		propsStr := string(propsData)
+		// Replace online-mode=true with online-mode=false
+		if strings.Contains(propsStr, "online-mode=true") {
+			propsStr = strings.Replace(propsStr, "online-mode=true", "online-mode=false", 1)
+			if err := os.WriteFile(propsPath, []byte(propsStr), 0644); err != nil {
+				log.Printf("Warning: Failed to update server.properties: %v", err)
+			} else {
+				log.Printf("Updated server.properties to use online-mode=false")
+			}
 		}
 	}
 

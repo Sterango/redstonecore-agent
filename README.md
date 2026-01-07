@@ -150,6 +150,12 @@ Make sure your firewall allows incoming connections on your Minecraft ports.
 
 ## Updating
 
+### Via Web Dashboard (Recommended)
+
+When a new version is available, you'll see an **"Update Now"** button on your instance page in the RedstoneCore dashboard. Click it to automatically pull and restart with the latest version.
+
+### Via Command Line
+
 ```bash
 # Pull the latest image
 docker compose pull

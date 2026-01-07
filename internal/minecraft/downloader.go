@@ -39,6 +39,13 @@ func (d *Downloader) DownloadServer(serverType ServerType, version string, destD
 		return d.downloadForge(version, "", destDir)
 	case TypeNeoForge:
 		return d.downloadNeoForge(version, "", destDir)
+	case TypeVelocity:
+		return d.downloadVelocity(destDir)
+	case TypeBungeeCord:
+		return d.downloadWaterfall(version, destDir)
+	case TypeSpigot:
+		// Spigot requires BuildTools, recommend Paper instead
+		return "", fmt.Errorf("Spigot requires BuildTools to compile. Consider using Paper instead (fully Spigot-compatible)")
 	default:
 		return "", fmt.Errorf("automatic download not supported for server type: %s", serverType)
 	}
@@ -638,4 +645,182 @@ java @user_jvm_args.txt @libraries/net/neoforged/neoforge/%s/unix_args.txt "$@"
 	}
 
 	return wrapperScript, nil
+}
+
+// downloadVelocity downloads Velocity proxy from PaperMC API
+func (d *Downloader) downloadVelocity(destDir string) (string, error) {
+	// Get available versions
+	versionsURL := "https://api.papermc.io/v2/projects/velocity"
+
+	resp, err := d.httpClient.Get(versionsURL)
+	if err != nil {
+		return "", fmt.Errorf("failed to fetch Velocity versions: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return "", fmt.Errorf("Velocity API returned status %d", resp.StatusCode)
+	}
+
+	var projectResp struct {
+		Versions []string `json:"versions"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&projectResp); err != nil {
+		return "", fmt.Errorf("failed to parse Velocity versions: %w", err)
+	}
+
+	if len(projectResp.Versions) == 0 {
+		return "", fmt.Errorf("no Velocity versions available")
+	}
+
+	// Get the latest stable version (last in list, skip SNAPSHOTs)
+	var version string
+	for i := len(projectResp.Versions) - 1; i >= 0; i-- {
+		v := projectResp.Versions[i]
+		if !strings.Contains(v, "SNAPSHOT") {
+			version = v
+			break
+		}
+	}
+	if version == "" {
+		version = projectResp.Versions[len(projectResp.Versions)-1]
+	}
+
+	// Get the latest build for this version
+	buildsURL := fmt.Sprintf("https://api.papermc.io/v2/projects/velocity/versions/%s/builds", version)
+
+	resp, err = d.httpClient.Get(buildsURL)
+	if err != nil {
+		return "", fmt.Errorf("failed to fetch Velocity builds: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return "", fmt.Errorf("Velocity API returned status %d for version %s", resp.StatusCode, version)
+	}
+
+	var buildsResp struct {
+		Builds []struct {
+			Build     int `json:"build"`
+			Downloads struct {
+				Application struct {
+					Name   string `json:"name"`
+					SHA256 string `json:"sha256"`
+				} `json:"application"`
+			} `json:"downloads"`
+		} `json:"builds"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&buildsResp); err != nil {
+		return "", fmt.Errorf("failed to parse Velocity builds: %w", err)
+	}
+
+	if len(buildsResp.Builds) == 0 {
+		return "", fmt.Errorf("no builds found for Velocity %s", version)
+	}
+
+	// Get the latest build
+	latestBuild := buildsResp.Builds[len(buildsResp.Builds)-1]
+	jarName := latestBuild.Downloads.Application.Name
+
+	downloadURL := fmt.Sprintf("https://api.papermc.io/v2/projects/velocity/versions/%s/builds/%d/downloads/%s",
+		version, latestBuild.Build, jarName)
+
+	destPath := filepath.Join(destDir, "server.jar")
+
+	if err := d.downloadFile(downloadURL, destPath); err != nil {
+		return "", fmt.Errorf("failed to download Velocity JAR: %w", err)
+	}
+
+	return destPath, nil
+}
+
+// downloadWaterfall downloads Waterfall (BungeeCord fork) from PaperMC API
+func (d *Downloader) downloadWaterfall(mcVersion string, destDir string) (string, error) {
+	// Get available versions
+	versionsURL := "https://api.papermc.io/v2/projects/waterfall"
+
+	resp, err := d.httpClient.Get(versionsURL)
+	if err != nil {
+		return "", fmt.Errorf("failed to fetch Waterfall versions: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return "", fmt.Errorf("Waterfall API returned status %d", resp.StatusCode)
+	}
+
+	var projectResp struct {
+		Versions []string `json:"versions"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&projectResp); err != nil {
+		return "", fmt.Errorf("failed to parse Waterfall versions: %w", err)
+	}
+
+	if len(projectResp.Versions) == 0 {
+		return "", fmt.Errorf("no Waterfall versions available")
+	}
+
+	// Find matching version or use latest
+	version := ""
+	for _, v := range projectResp.Versions {
+		if v == mcVersion {
+			version = v
+			break
+		}
+	}
+	if version == "" {
+		// Use latest version
+		version = projectResp.Versions[len(projectResp.Versions)-1]
+	}
+
+	// Get the latest build for this version
+	buildsURL := fmt.Sprintf("https://api.papermc.io/v2/projects/waterfall/versions/%s/builds", version)
+
+	resp, err = d.httpClient.Get(buildsURL)
+	if err != nil {
+		return "", fmt.Errorf("failed to fetch Waterfall builds: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return "", fmt.Errorf("Waterfall API returned status %d for version %s", resp.StatusCode, version)
+	}
+
+	var buildsResp struct {
+		Builds []struct {
+			Build     int `json:"build"`
+			Downloads struct {
+				Application struct {
+					Name   string `json:"name"`
+					SHA256 string `json:"sha256"`
+				} `json:"application"`
+			} `json:"downloads"`
+		} `json:"builds"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&buildsResp); err != nil {
+		return "", fmt.Errorf("failed to parse Waterfall builds: %w", err)
+	}
+
+	if len(buildsResp.Builds) == 0 {
+		return "", fmt.Errorf("no builds found for Waterfall %s", version)
+	}
+
+	// Get the latest build
+	latestBuild := buildsResp.Builds[len(buildsResp.Builds)-1]
+	jarName := latestBuild.Downloads.Application.Name
+
+	downloadURL := fmt.Sprintf("https://api.papermc.io/v2/projects/waterfall/versions/%s/builds/%d/downloads/%s",
+		version, latestBuild.Build, jarName)
+
+	destPath := filepath.Join(destDir, "server.jar")
+
+	if err := d.downloadFile(downloadURL, destPath); err != nil {
+		return "", fmt.Errorf("failed to download Waterfall JAR: %w", err)
+	}
+
+	return destPath, nil
 }

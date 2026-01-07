@@ -562,13 +562,16 @@ func (a *Agent) GetServerAnalytics() []heartbeat.ServerAnalytics {
 			continue
 		}
 
+		// Get real metrics from the server
+		tps, memoryMB, cpuPercent := server.GetMetrics()
+
 		analytics = append(analytics, heartbeat.ServerAnalytics{
 			UUID:         server.UUID,
 			PlayerCount:  server.PlayerCount,
-			TPS:          0, // TPS tracking not yet implemented
-			MemoryUsedMB: 0, // Memory tracking not yet implemented
+			TPS:          tps,
+			MemoryUsedMB: memoryMB,
 			MemoryMaxMB:  server.AllocatedRAM,
-			CPUPercent:   0, // CPU tracking not yet implemented
+			CPUPercent:   cpuPercent,
 		})
 	}
 

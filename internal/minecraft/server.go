@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -51,14 +53,22 @@ type Server struct {
 	DataDir          string
 	JarFile          string
 
-	cmd           *exec.Cmd
-	stdin         io.WriteCloser
-	consoleBuffer []string
-	consoleMutex  sync.Mutex
-	playersMutex  sync.Mutex
-	onConsoleLine func(line string)
-	onPlayerEvent func(event, playerName, playerUUID string)
-	stopChan      chan struct{}
+	// Metrics
+	TPS          float64
+	MemoryUsedMB int
+	CPUPercent   float64
+
+	cmd              *exec.Cmd
+	stdin            io.WriteCloser
+	consoleBuffer    []string
+	consoleMutex     sync.Mutex
+	playersMutex     sync.Mutex
+	metricsMutex     sync.Mutex
+	onConsoleLine    func(line string)
+	onPlayerEvent    func(event, playerName, playerUUID string)
+	stopChan         chan struct{}
+	lastCPUTime      uint64
+	lastCPUCheckTime time.Time
 }
 
 type ServerConfig struct {
@@ -279,7 +289,20 @@ func (s *Server) readOutput(reader io.Reader) {
 	}
 }
 
+// TPS regex patterns for various server types
+var (
+	// Paper/Spigot: "TPS from last 1m, 5m, 15m: 20.0, 20.0, 20.0" or "TPS from last 1m, 5m, 15m: *20.0, *20.0, *20.0"
+	tpsRegex = regexp.MustCompile(`TPS.*?:\s*\*?([\d.]+)`)
+	// Spark plugin: various TPS formats
+	sparkTPSRegex = regexp.MustCompile(`(?:TPS|tps).*?([\d.]+)`)
+	// MSPT (milliseconds per tick) - Paper's /mspt command
+	msptRegex = regexp.MustCompile(`MSPT.*?:\s*([\d.]+)`)
+)
+
 func (s *Server) parseConsoleLine(line string) {
+	// Parse TPS from console output
+	s.parseTPS(line)
+
 	// Parse player join/leave messages to update player count and names
 	// Format: "[HH:MM:SS] [Server thread/INFO] [minecraft/MinecraftServer]: PlayerName joined the game"
 	if strings.Contains(line, "joined the game") {
@@ -533,6 +556,153 @@ func LoadServerProperties(serverDir string) (map[string]string, error) {
 	}
 
 	return props, nil
+}
+
+// parseTPS extracts TPS from console output
+func (s *Server) parseTPS(line string) {
+	// Check for TPS in console output
+	if strings.Contains(strings.ToUpper(line), "TPS") {
+		if match := tpsRegex.FindStringSubmatch(line); len(match) > 1 {
+			if tps, err := strconv.ParseFloat(match[1], 64); err == nil && tps > 0 && tps <= 20 {
+				s.metricsMutex.Lock()
+				s.TPS = tps
+				s.metricsMutex.Unlock()
+			}
+		}
+	}
+
+	// Check for MSPT (convert to approximate TPS: TPS = 1000/MSPT, capped at 20)
+	if strings.Contains(strings.ToUpper(line), "MSPT") {
+		if match := msptRegex.FindStringSubmatch(line); len(match) > 1 {
+			if mspt, err := strconv.ParseFloat(match[1], 64); err == nil && mspt > 0 {
+				tps := 1000.0 / mspt
+				if tps > 20 {
+					tps = 20
+				}
+				s.metricsMutex.Lock()
+				s.TPS = tps
+				s.metricsMutex.Unlock()
+			}
+		}
+	}
+}
+
+// GetProcessMetrics reads memory and CPU usage from /proc for the Java process
+func (s *Server) GetProcessMetrics() (memoryMB int, cpuPercent float64) {
+	if s.cmd == nil || s.cmd.Process == nil {
+		return 0, 0
+	}
+
+	pid := s.cmd.Process.Pid
+
+	// Read memory from /proc/[pid]/status
+	memoryMB = s.readProcessMemory(pid)
+
+	// Read CPU from /proc/[pid]/stat
+	cpuPercent = s.readProcessCPU(pid)
+
+	// Update stored metrics
+	s.metricsMutex.Lock()
+	s.MemoryUsedMB = memoryMB
+	s.CPUPercent = cpuPercent
+	s.metricsMutex.Unlock()
+
+	return memoryMB, cpuPercent
+}
+
+// readProcessMemory reads RSS memory from /proc/[pid]/status
+func (s *Server) readProcessMemory(pid int) int {
+	statusPath := fmt.Sprintf("/proc/%d/status", pid)
+	data, err := os.ReadFile(statusPath)
+	if err != nil {
+		return 0
+	}
+
+	lines := strings.Split(string(data), "\n")
+	for _, line := range lines {
+		if strings.HasPrefix(line, "VmRSS:") {
+			// Format: "VmRSS:    123456 kB"
+			fields := strings.Fields(line)
+			if len(fields) >= 2 {
+				if kb, err := strconv.ParseInt(fields[1], 10, 64); err == nil {
+					return int(kb / 1024) // Convert kB to MB
+				}
+			}
+		}
+	}
+
+	return 0
+}
+
+// readProcessCPU calculates CPU usage percentage since last check
+func (s *Server) readProcessCPU(pid int) float64 {
+	statPath := fmt.Sprintf("/proc/%d/stat", pid)
+	data, err := os.ReadFile(statPath)
+	if err != nil {
+		return 0
+	}
+
+	// Parse /proc/[pid]/stat - fields are space-separated
+	// Field 14 (utime) and 15 (stime) are CPU times in clock ticks
+	fields := strings.Fields(string(data))
+	if len(fields) < 15 {
+		return 0
+	}
+
+	utime, _ := strconv.ParseUint(fields[13], 10, 64)
+	stime, _ := strconv.ParseUint(fields[14], 10, 64)
+	totalCPUTime := utime + stime
+
+	now := time.Now()
+
+	s.metricsMutex.Lock()
+	defer s.metricsMutex.Unlock()
+
+	if s.lastCPUTime == 0 || s.lastCPUCheckTime.IsZero() {
+		// First reading, just store values
+		s.lastCPUTime = totalCPUTime
+		s.lastCPUCheckTime = now
+		return 0
+	}
+
+	// Calculate CPU percentage
+	timeDelta := now.Sub(s.lastCPUCheckTime).Seconds()
+	if timeDelta < 0.1 {
+		// Too short interval, return last known value
+		return s.CPUPercent
+	}
+
+	cpuDelta := totalCPUTime - s.lastCPUTime
+
+	// Clock ticks per second (usually 100 on Linux)
+	clockTicks := float64(100)
+
+	// CPU percentage = (CPU ticks used / elapsed ticks) * 100
+	// elapsed ticks = timeDelta * clockTicks
+	cpuPercent := (float64(cpuDelta) / (timeDelta * clockTicks)) * 100
+
+	// Update stored values
+	s.lastCPUTime = totalCPUTime
+	s.lastCPUCheckTime = now
+
+	// Cap at reasonable value (can exceed 100% on multi-core)
+	if cpuPercent > 800 {
+		cpuPercent = 0 // Invalid reading
+	}
+
+	return cpuPercent
+}
+
+// GetMetrics returns current metrics for this server
+func (s *Server) GetMetrics() (tps float64, memoryMB int, cpuPercent float64) {
+	// Update process metrics
+	memoryMB, cpuPercent = s.GetProcessMetrics()
+
+	s.metricsMutex.Lock()
+	tps = s.TPS
+	s.metricsMutex.Unlock()
+
+	return tps, memoryMB, cpuPercent
 }
 
 // UpdateProperties updates server.properties with the given values

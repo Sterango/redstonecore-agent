@@ -2,6 +2,7 @@ package maprender
 
 import (
 	"bytes"
+	"compress/gzip"
 	"compress/zlib"
 	"encoding/binary"
 	"fmt"
@@ -131,8 +132,12 @@ func parseChunk(data []byte, compression byte) (*chunk, error) {
 
 	switch compression {
 	case 1: // GZip
-		// Rarely used but handle it
-		return nil, fmt.Errorf("gzip chunks not supported")
+		gz, err := gzip.NewReader(bytes.NewReader(data))
+		if err != nil {
+			return nil, err
+		}
+		defer gz.Close()
+		reader = gz
 	case 2: // Zlib
 		zr, err := zlib.NewReader(bytes.NewReader(data))
 		if err != nil {
@@ -157,8 +162,8 @@ func parseChunk(data []byte, compression byte) (*chunk, error) {
 		return nil, err
 	}
 
-	// Read root compound tag
-	tagType, _, _, err := nbt.ReadTag()
+	// Read root compound tag — ReadTag reads type, name, AND the full value
+	tagType, _, val, err := nbt.ReadTag()
 	if err != nil {
 		return nil, err
 	}
@@ -166,9 +171,9 @@ func parseChunk(data []byte, compression byte) (*chunk, error) {
 		return nil, fmt.Errorf("expected compound, got %d", tagType)
 	}
 
-	root, err := nbt.ReadCompound()
-	if err != nil {
-		return nil, err
+	root, ok := val.(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("root tag is not a compound")
 	}
 
 	return parseChunkNBT(root)
@@ -178,9 +183,21 @@ func parseChunkNBT(root map[string]interface{}) (*chunk, error) {
 	c := &chunk{}
 
 	// Post-1.18 format: sections are at root level
+	// Pre-1.18 format: sections are under Level.Sections
 	sectionsRaw, ok := root["sections"]
 	if !ok {
-		return c, nil
+		// Try pre-1.18 format
+		if level, hasLevel := root["Level"]; hasLevel {
+			if levelMap, ok := level.(map[string]interface{}); ok {
+				sectionsRaw, ok = levelMap["Sections"]
+				if !ok {
+					return c, nil
+				}
+			}
+		}
+		if sectionsRaw == nil {
+			return c, nil
+		}
 	}
 
 	sectionsList, ok := sectionsRaw.([]interface{})
@@ -327,8 +344,10 @@ func getBlockIndex(sec *section, x, y, z int) int {
 		return 0
 	}
 
-	mask := int64((1 << bitsPerEntry) - 1)
-	value := int((sec.states[longIndex] >> bitOffset) & mask)
+	// Use uint64 to avoid sign-extension on right shift
+	uval := uint64(sec.states[longIndex])
+	mask := uint64((1 << bitsPerEntry) - 1)
+	value := int((uval >> bitOffset) & mask)
 
 	if value >= len(sec.palette) {
 		return 0

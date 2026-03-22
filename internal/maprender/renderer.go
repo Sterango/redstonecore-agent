@@ -5,11 +5,13 @@ import (
 	"image"
 	"image/color"
 	"image/png"
+	"log"
 )
 
 // RenderRegionTile renders a region as a 512x512 PNG tile (1 block = 1 pixel)
 func RenderRegionTile(region *Region) ([]byte, error) {
 	img := image.NewRGBA(image.Rect(0, 0, regionBlocks, regionBlocks))
+	debugWater := true
 
 	for z := 0; z < regionBlocks; z++ {
 		for x := 0; x < regionBlocks; x++ {
@@ -22,6 +24,10 @@ func RenderRegionTile(region *Region) ([]byte, error) {
 			}
 
 			c := GetBlockColor(blockName)
+			if debugWater && blockName == "minecraft:water" && x == 0 && z == 0 {
+				log.Printf("[Map] DEBUG water color: RGBA(%d,%d,%d,%d) for %s at y=%d", c.R, c.G, c.B, c.A, blockName, y)
+				debugWater = false
+			}
 			c = applyHeightShading(c, y)
 			img.SetRGBA(x, z, c)
 		}

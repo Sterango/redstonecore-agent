@@ -16,6 +16,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/sterango/redstonecore-agent/internal/backup"
+	"github.com/sterango/redstonecore-agent/internal/maprender"
 )
 
 // Client handles the SFTP relay WebSocket connection
@@ -294,6 +295,12 @@ func (h *DefaultHandler) HandleSFTPRequest(req *Request) *Response {
 		return h.handleArchiveStatus(req)
 	case "archive_download":
 		return h.handleArchiveDownload(req)
+	case "map_tile":
+		return h.handleMapTile(req)
+	case "map_regions":
+		return h.handleMapRegions(req)
+	case "map_invalidate":
+		return h.handleMapInvalidate(req)
 	default:
 		return &Response{ID: req.ID, Success: false, Error: "unknown operation"}
 	}
@@ -1255,4 +1262,50 @@ func (h *DefaultHandler) createTarGzArchiveWithProgress(source, dest string, isD
 		onProgress(1)
 	}
 	return err
+}
+
+// handleMapTile renders a map tile for a server region
+func (h *DefaultHandler) handleMapTile(req *Request) *Response {
+	basePath, err := h.getServerPath(req.ServerUUID)
+	if err != nil {
+		return &Response{ID: req.ID, Success: false, Error: err.Error()}
+	}
+
+	params := req.Data
+	if params == nil {
+		params = map[string]interface{}{}
+	}
+
+	result := maprender.HandleMapTile(basePath, req.ServerUUID, h.dataDir, params)
+	if errStr, ok := result["error"].(string); ok && errStr != "" {
+		return &Response{ID: req.ID, Success: false, Error: errStr}
+	}
+
+	return &Response{ID: req.ID, Success: true, Data: result}
+}
+
+// handleMapRegions lists available region files for a server
+func (h *DefaultHandler) handleMapRegions(req *Request) *Response {
+	basePath, err := h.getServerPath(req.ServerUUID)
+	if err != nil {
+		return &Response{ID: req.ID, Success: false, Error: err.Error()}
+	}
+
+	params := req.Data
+	if params == nil {
+		params = map[string]interface{}{}
+	}
+
+	result := maprender.HandleMapRegions(basePath, params)
+	return &Response{ID: req.ID, Success: true, Data: result}
+}
+
+// handleMapInvalidate clears the tile cache for a server
+func (h *DefaultHandler) handleMapInvalidate(req *Request) *Response {
+	result := maprender.HandleMapInvalidate(req.ServerUUID, h.dataDir)
+	if errStr, ok := result["error"].(string); ok && errStr != "" {
+		return &Response{ID: req.ID, Success: false, Error: errStr}
+	}
+
+	return &Response{ID: req.ID, Success: true, Data: result}
 }

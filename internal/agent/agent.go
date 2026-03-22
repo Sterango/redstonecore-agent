@@ -786,20 +786,26 @@ func (a *Agent) updateAgent(cmd api.Command) error {
 	// Docker volume mounts always reference HOST paths, not container paths.
 	hostComposePath := a.findHostComposePath()
 	if hostComposePath == "" {
-		// Fallback: common paths
 		hostComposePath = "/docker-compose.yml"
 		log.Printf("[Update] Could not detect host compose path, using fallback: %s", hostComposePath)
 	} else {
 		log.Printf("[Update] Detected host compose path: %s", hostComposePath)
 	}
 
+	// The .env file is in the same directory as docker-compose.yml
+	hostComposeDir := filepath.Dir(hostComposePath)
+	hostEnvPath := filepath.Join(hostComposeDir, ".env")
+
 	// Use docker:cli (has compose v2) to recreate the container with the new image.
 	// Must use a separate container because compose recreate kills this process.
+	// Mount both the compose file AND .env file so environment variables are preserved.
 	restartCmd := exec.Command("docker", "run", "--rm", "-d",
 		"-v", "/var/run/docker.sock:/var/run/docker.sock",
-		"-v", hostComposePath+":/docker-compose.yml:ro",
+		"-v", hostComposePath+":/app/docker-compose.yml:ro",
+		"-v", hostEnvPath+":/app/.env:ro",
+		"-w", "/app",
 		"docker:cli",
-		"docker", "compose", "-p", "redstonecore", "-f", "/docker-compose.yml",
+		"docker", "compose", "-p", "redstonecore", "-f", "/app/docker-compose.yml",
 		"up", "-d", "--force-recreate")
 	restartCmd.Stdout = os.Stdout
 	restartCmd.Stderr = os.Stderr

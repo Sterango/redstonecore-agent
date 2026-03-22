@@ -196,6 +196,27 @@ func (c *Client) ReportPlayerEvent(req *PlayerEventRequest) error {
 	return err
 }
 
+// PlayerPositionData represents a single player's position
+type PlayerPositionData struct {
+	Username  string  `json:"username"`
+	X         float64 `json:"x"`
+	Y         float64 `json:"y"`
+	Z         float64 `json:"z"`
+	Dimension string  `json:"dimension,omitempty"`
+}
+
+// PlayerPositionsRequest reports player positions
+type PlayerPositionsRequest struct {
+	ServerUUID string               `json:"server_uuid"`
+	Players    []PlayerPositionData `json:"players"`
+}
+
+// ReportPlayerPositions reports player positions to the cloud
+func (c *Client) ReportPlayerPositions(req *PlayerPositionsRequest) error {
+	_, err := c.post("/api/v1/instance/players/positions", req, true)
+	return err
+}
+
 // AnalyticsRequest reports server analytics snapshot
 type AnalyticsRequest struct {
 	ServerUUID   string  `json:"server_uuid"`

@@ -22,6 +22,7 @@ type ServerStatusProvider interface {
 	GetServerStatuses() []api.ServerStatus
 	GetServerAnalytics() []ServerAnalytics
 	ExecuteCommand(cmd api.Command) error
+	PollPlayerPositions()
 }
 
 type Heartbeat struct {
@@ -29,6 +30,7 @@ type Heartbeat struct {
 	provider          ServerStatusProvider
 	interval          time.Duration
 	analyticsCounter  int
+	positionCounter   int
 	updateNotified    bool
 	stopChan          chan struct{}
 	doneChan          chan struct{}
@@ -75,6 +77,13 @@ func (h *Heartbeat) run() {
 			if h.analyticsCounter >= 30 {
 				h.analyticsCounter = 0
 				h.sendAnalytics()
+			}
+
+			// Poll player positions every 5 heartbeats (5 seconds)
+			h.positionCounter++
+			if h.positionCounter >= 5 {
+				h.positionCounter = 0
+				go h.provider.PollPlayerPositions()
 			}
 		case <-h.stopChan:
 			return

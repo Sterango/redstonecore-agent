@@ -28,7 +28,7 @@ func RenderRegionTile(region *Region) ([]byte, error) {
 	}
 
 	var buf bytes.Buffer
-	encoder := &png.Encoder{CompressionLevel: png.BestSpeed}
+	encoder := &png.Encoder{CompressionLevel: png.BestCompression}
 	if err := encoder.Encode(&buf, img); err != nil {
 		return nil, err
 	}

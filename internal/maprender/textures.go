@@ -102,9 +102,19 @@ func extractTexturesFromJar(jarPath string, colors map[string]color.RGBA) {
 		// Just use the filename for simplicity
 		blockName := namespace + ":" + textureName
 
+		// Skip biome-tinted textures — these are grayscale overlays that Minecraft
+		// tints at runtime. The raw textures produce wrong colors.
+		if isBiomeTintedTexture(textureName) {
+			continue
+		}
+
 		// Prefer _top texture for top-down view
 		if strings.HasSuffix(textureName, "_top") {
 			baseName := namespace + ":" + strings.TrimSuffix(textureName, "_top")
+			// Also skip biome-tinted _top variants
+			if isBiomeTintedTexture(strings.TrimSuffix(textureName, "_top")) {
+				continue
+			}
 			avgColor := averageTextureColor(f)
 			if avgColor.A > 0 {
 				colors[baseName] = avgColor
@@ -128,6 +138,27 @@ func extractTexturesFromJar(jarPath string, colors map[string]color.RGBA) {
 		}
 	skip:
 	}
+}
+
+// isBiomeTintedTexture returns true if the texture name corresponds to a block
+// whose texture is a grayscale overlay tinted by the biome system at runtime.
+func isBiomeTintedTexture(name string) bool {
+	tinted := []string{
+		"water", "water_still", "water_flow", "water_overlay",
+		"grass_block", "grass",
+		"short_grass", "tall_grass", "fern", "large_fern",
+		"oak_leaves", "spruce_leaves", "birch_leaves", "jungle_leaves",
+		"acacia_leaves", "dark_oak_leaves", "mangrove_leaves",
+		"azalea_leaves", "flowering_azalea_leaves", "cherry_leaves",
+		"vine", "lily_pad", "sugar_cane",
+		"seagrass", "tall_seagrass",
+	}
+	for _, t := range tinted {
+		if name == t {
+			return true
+		}
+	}
+	return false
 }
 
 func averageTextureColor(f *zip.File) color.RGBA {

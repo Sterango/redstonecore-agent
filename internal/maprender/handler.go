@@ -61,13 +61,24 @@ func HandleMapTile(serverDir, serverUUID, dataDir string, params map[string]inte
 	x := int(xf)
 	z := int(zf)
 
+	mode, _ := params["mode"].(string)
+	if mode == "" {
+		mode = "flat"
+	}
+
 	// Initialize texture color map on first use (scans JARs for block textures)
 	InitColorMap(serverDir)
+
+	// Include mode in cache key
+	cacheKey := dimension
+	if mode == "3d" {
+		cacheKey = dimension + "_3d"
+	}
 
 	tc := getCache(dataDir)
 
 	// Check cache
-	if data, ok := tc.Get(serverUUID, dimension, x, z); ok {
+	if data, ok := tc.Get(serverUUID, cacheKey, x, z); ok {
 		return map[string]interface{}{
 			"content": base64.StdEncoding.EncodeToString(data),
 			"cached":  true,
@@ -125,7 +136,7 @@ func HandleMapTile(serverDir, serverUUID, dataDir string, params map[string]inte
 	}
 
 	// Render tile
-	pngData, err := RenderRegionTile(region)
+	pngData, err := RenderRegionTile(region, mode)
 	if err != nil {
 		log.Printf("[Map] Failed to render region r.%d.%d.mca: %v", x, z, err)
 		return map[string]interface{}{
@@ -134,7 +145,7 @@ func HandleMapTile(serverDir, serverUUID, dataDir string, params map[string]inte
 	}
 
 	// Cache the tile
-	if cacheErr := tc.Put(serverUUID, dimension, x, z, pngData); cacheErr != nil {
+	if cacheErr := tc.Put(serverUUID, cacheKey, x, z, pngData); cacheErr != nil {
 		log.Printf("[Map] Failed to cache tile: %v", cacheErr)
 	}
 

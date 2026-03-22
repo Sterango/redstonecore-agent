@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"log"
 	"os"
 	"path/filepath"
@@ -50,7 +51,42 @@ func (a *Agent) PollPlayerPositions() {
 	}
 }
 
+// usercacheEntry represents an entry in Minecraft's usercache.json
+type usercacheEntry struct {
+	Name string `json:"name"`
+	UUID string `json:"uuid"`
+}
+
+// loadUsercache reads usercache.json to build a UUID→username mapping
+func loadUsercache(serverDir string) map[string]string {
+	path := filepath.Join(serverDir, "usercache.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+
+	var entries []usercacheEntry
+	if err := json.Unmarshal(data, &entries); err != nil {
+		return nil
+	}
+
+	m := make(map[string]string, len(entries))
+	for _, e := range entries {
+		m[e.UUID] = e.Name
+	}
+	return m
+}
+
 func readPlayerPositions(serverDir string, playerNames []string) []api.PlayerPositionData {
+	// Build UUID→username map from usercache.json
+	uuidToName := loadUsercache(serverDir)
+
+	// Build a set of online player names (lowercase for case-insensitive matching)
+	onlineSet := make(map[string]string, len(playerNames))
+	for _, name := range playerNames {
+		onlineSet[strings.ToLower(name)] = name
+	}
+
 	playerDataDir := filepath.Join(serverDir, "world", "playerdata")
 	entries, err := os.ReadDir(playerDataDir)
 	if err != nil {
@@ -65,26 +101,30 @@ func readPlayerPositions(serverDir string, playerNames []string) []api.PlayerPos
 			continue
 		}
 
-		filePath := filepath.Join(playerDataDir, name)
-		pos, username, dimension := readPlayerNBT(filePath)
-		if pos == nil || username == "" {
+		// Get UUID from filename (e.g., "20ddb852-c1c8-4e3f-84ad-5d27f812a5de.dat")
+		fileUUID := strings.TrimSuffix(name, ".dat")
+
+		// Look up username from usercache
+		username, found := uuidToName[fileUUID]
+		if !found {
 			continue
 		}
 
-		// Only include online players
-		isOnline := false
-		for _, pn := range playerNames {
-			if strings.EqualFold(pn, username) {
-				isOnline = true
-				break
-			}
-		}
+		// Check if this player is online
+		originalName, isOnline := onlineSet[strings.ToLower(username)]
 		if !isOnline {
 			continue
 		}
 
+		// Read position from NBT
+		filePath := filepath.Join(playerDataDir, name)
+		pos, dimension := readPlayerPosition(filePath)
+		if pos == nil {
+			continue
+		}
+
 		positions = append(positions, api.PlayerPositionData{
-			Username:  username,
+			Username:  originalName,
 			X:         pos[0],
 			Y:         pos[1],
 			Z:         pos[2],
@@ -95,25 +135,25 @@ func readPlayerPositions(serverDir string, playerNames []string) []api.PlayerPos
 	return positions
 }
 
-func readPlayerNBT(path string) ([]float64, string, string) {
+func readPlayerPosition(path string) ([]float64, string) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, "", ""
+		return nil, ""
 	}
 
 	reader, err := maprender.NewNBTReader(data)
 	if err != nil {
-		return nil, "", ""
+		return nil, ""
 	}
 
 	tagType, _, val, err := reader.ReadTag()
 	if err != nil || tagType != 10 {
-		return nil, "", ""
+		return nil, ""
 	}
 
 	root, ok := val.(map[string]interface{})
 	if !ok {
-		return nil, "", ""
+		return nil, ""
 	}
 
 	// Extract position: "Pos" is a TAG_List of 3 doubles
@@ -129,28 +169,6 @@ func readPlayerNBT(path string) ([]float64, string, string) {
 					pos[i] = float64(fv)
 				}
 			}
-		}
-	}
-
-	// Extract username
-	var username string
-	// Bukkit/Spigot/Paper
-	if bukkit, ok := root["bukkit"]; ok {
-		if bMap, ok := bukkit.(map[string]interface{}); ok {
-			if name, ok := bMap["lastKnownName"].(string); ok {
-				username = name
-			}
-		}
-	}
-	if username == "" {
-		if name, ok := root["lastKnownName"].(string); ok {
-			username = name
-		}
-	}
-	// NeoForge/Forge
-	if username == "" {
-		if name, ok := root["PlayerName"].(string); ok {
-			username = name
 		}
 	}
 
@@ -171,5 +189,5 @@ func readPlayerNBT(path string) ([]float64, string, string) {
 		}
 	}
 
-	return pos, username, dimension
+	return pos, dimension
 }

@@ -78,17 +78,22 @@ func HandleMapTile(serverDir, serverUUID, dataDir string, params map[string]inte
 	regionDir := dimensionPath(serverDir, dimension)
 	regionFile := filepath.Join(regionDir, fmt.Sprintf("r.%d.%d.mca", x, z))
 
+	log.Printf("[Map] Reading region file: %s", regionFile)
+
 	data, err := os.ReadFile(regionFile)
 	if err != nil {
+		log.Printf("[Map] Failed to read %s: %v", regionFile, err)
 		return map[string]interface{}{
-			"error": fmt.Sprintf("region file not found: r.%d.%d.mca", x, z),
+			"error": fmt.Sprintf("region file not found: r.%d.%d.mca: %v", x, z, err),
 		}
 	}
+
+	log.Printf("[Map] Read %d bytes from r.%d.%d.mca", len(data), x, z)
 
 	// Parse region
 	region, err := ParseRegion(data, x, z)
 	if err != nil {
-		log.Printf("[Map] Failed to parse region r.%d.%d.mca: %v", x, z, err)
+		log.Printf("[Map] Failed to parse region r.%d.%d.mca (%d bytes): %v", x, z, len(data), err)
 		return map[string]interface{}{
 			"error": fmt.Sprintf("parse error: %v", err),
 		}

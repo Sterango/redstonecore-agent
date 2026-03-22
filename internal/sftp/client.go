@@ -109,7 +109,11 @@ func (c *Client) connect() error {
 	header := make(map[string][]string)
 	header["Authorization"] = []string{"Bearer " + c.apiToken}
 
-	conn, _, err := websocket.DefaultDialer.Dial(c.relayURL, header)
+	dialer := websocket.Dialer{
+		ReadBufferSize:  1024 * 64,   // 64KB
+		WriteBufferSize: 1024 * 1024, // 1MB for large tile responses
+	}
+	conn, _, err := dialer.Dial(c.relayURL, header)
 	if err != nil {
 		return fmt.Errorf("dial failed: %w", err)
 	}

@@ -61,6 +61,9 @@ func HandleMapTile(serverDir, serverUUID, dataDir string, params map[string]inte
 	x := int(xf)
 	z := int(zf)
 
+	// Initialize texture color map on first use (scans JARs for block textures)
+	InitColorMap(serverDir)
+
 	tc := getCache(dataDir)
 
 	// Check cache
@@ -194,7 +197,7 @@ func HandleMapRegions(serverDir string, params map[string]interface{}) map[strin
 	}
 }
 
-// HandleMapInvalidate clears the tile cache for a server
+// HandleMapInvalidate clears the tile cache and texture cache for a server
 func HandleMapInvalidate(serverUUID, dataDir string) map[string]interface{} {
 	tc := getCache(dataDir)
 	if err := tc.Invalidate(serverUUID); err != nil {
@@ -202,6 +205,8 @@ func HandleMapInvalidate(serverUUID, dataDir string) map[string]interface{} {
 			"error": err.Error(),
 		}
 	}
+	// Also reset texture colors so they get re-extracted on next render
+	ResetTextureCache()
 	return map[string]interface{}{
 		"cleared": true,
 	}

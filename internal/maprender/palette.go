@@ -1,6 +1,9 @@
 package maprender
 
-import "image/color"
+import (
+	"image/color"
+	"strings"
+)
 
 // BlockColors maps Minecraft block names to RGBA colors for top-down rendering
 var BlockColors = map[string]color.RGBA{
@@ -190,24 +193,201 @@ var BlockColors = map[string]color.RGBA{
 	"minecraft:mushroom_stem":     {203, 196, 185, 255},
 	"minecraft:brown_mushroom_block": {149, 112, 80, 255},
 	"minecraft:red_mushroom_block":   {200, 47, 45, 255},
+
+	// Flowers & small plants
+	"minecraft:poppy":             {176, 36, 24, 255},
+	"minecraft:dandelion":         {245, 225, 50, 255},
+	"minecraft:azure_bluet":       {210, 230, 230, 255},
+	"minecraft:cornflower":        {75, 105, 200, 255},
+	"minecraft:lily_of_the_valley": {230, 240, 230, 255},
+	"minecraft:oxeye_daisy":       {230, 230, 210, 255},
+	"minecraft:allium":            {170, 100, 190, 255},
+	"minecraft:red_tulip":         {180, 40, 30, 255},
+	"minecraft:orange_tulip":      {215, 130, 30, 255},
+	"minecraft:white_tulip":       {230, 240, 230, 255},
+	"minecraft:pink_tulip":        {210, 140, 170, 255},
+	"minecraft:blue_orchid":       {40, 150, 210, 255},
+	"minecraft:rose_bush":         {140, 30, 25, 255},
+	"minecraft:peony":             {210, 170, 200, 255},
+	"minecraft:lilac":             {180, 130, 180, 255},
+	"minecraft:sunflower":         {230, 195, 40, 255},
+	"minecraft:sweet_berry_bush":  {60, 100, 35, 255},
+	"minecraft:torchflower":       {220, 140, 40, 255},
+	"minecraft:pitcher_plant":     {80, 150, 170, 255},
+	"minecraft:wither_rose":       {30, 30, 20, 255},
+	"minecraft:seagrass":          {40, 130, 50, 200},
+	"minecraft:tall_seagrass":     {40, 130, 50, 200},
+	"minecraft:kelp":              {60, 120, 40, 200},
+	"minecraft:kelp_plant":        {60, 120, 40, 200},
+	"minecraft:lily_pad":          {30, 100, 20, 255},
+
+	// Crops
+	"minecraft:wheat":             {185, 170, 50, 255},
+	"minecraft:carrots":           {200, 120, 20, 255},
+	"minecraft:potatoes":          {180, 160, 60, 255},
+	"minecraft:beetroots":         {120, 40, 30, 255},
+
+	// Additional common blocks
+	"minecraft:smooth_basalt":     {72, 72, 72, 255},
+	"minecraft:calcite":           {223, 224, 220, 255},
+	"minecraft:tuff_bricks":       {108, 108, 98, 255},
+	"minecraft:bubble_column":     {64, 100, 209, 200},
+	"minecraft:pointed_dripstone": {134, 107, 92, 255},
+	"minecraft:dripstone_block":   {134, 107, 92, 255},
+	"minecraft:amethyst_block":    {133, 97, 191, 255},
+	"minecraft:moss_carpet":       {89, 109, 45, 255},
+	"minecraft:azalea_leaves":     {75, 115, 35, 200},
+	"minecraft:flowering_azalea_leaves": {90, 120, 50, 200},
+	"minecraft:spore_blossom":     {190, 90, 130, 255},
+	"minecraft:glow_lichen":       {110, 130, 110, 200},
+	"minecraft:sculk":             {12, 30, 38, 255},
+	"minecraft:sculk_vein":        {12, 30, 38, 200},
+	"minecraft:mud_bricks":        {90, 76, 60, 255},
+	"minecraft:packed_mud":        {120, 95, 72, 255},
+	"minecraft:mangrove_propagule": {80, 130, 40, 255},
+	"minecraft:suspicious_sand":   {219, 207, 163, 255},
+	"minecraft:suspicious_gravel": {131, 127, 126, 255},
+
+	// Stairs, slabs, fences (map to their base material)
+	"minecraft:oak_stairs":        {162, 130, 78, 255},
+	"minecraft:oak_slab":          {162, 130, 78, 255},
+	"minecraft:oak_fence":         {162, 130, 78, 255},
+	"minecraft:birch_stairs":      {192, 175, 121, 255},
+	"minecraft:birch_slab":        {192, 175, 121, 255},
+	"minecraft:birch_fence":       {192, 175, 121, 255},
+	"minecraft:spruce_stairs":     {114, 84, 48, 255},
+	"minecraft:spruce_slab":       {114, 84, 48, 255},
+	"minecraft:spruce_fence":      {114, 84, 48, 255},
+	"minecraft:dark_oak_stairs":   {67, 43, 20, 255},
+	"minecraft:dark_oak_slab":     {67, 43, 20, 255},
+	"minecraft:dark_oak_fence":    {67, 43, 20, 255},
+	"minecraft:stone_stairs":      {128, 128, 128, 255},
+	"minecraft:stone_slab":        {128, 128, 128, 255},
+	"minecraft:cobblestone_stairs": {122, 122, 122, 255},
+	"minecraft:cobblestone_slab":  {122, 122, 122, 255},
+	"minecraft:stone_brick_stairs": {122, 122, 122, 255},
+	"minecraft:stone_brick_slab":  {122, 122, 122, 255},
+
+	// Walls
+	"minecraft:cobblestone_wall":  {122, 122, 122, 255},
+	"minecraft:stone_brick_wall":  {122, 122, 122, 255},
 }
 
-// DefaultColor is used for unknown blocks
-var DefaultColor = color.RGBA{200, 0, 200, 255} // Magenta
+// DefaultColor is used for truly unknown blocks
+var DefaultColor = color.RGBA{128, 128, 128, 255} // Gray instead of magenta
 
-// GetBlockColor returns the color for a block name
+// serverDir is set when texture extraction runs, used by GetBlockColor
+var activeServerDir string
+
+// InitColorMap initializes the texture-based color map for a server
+func InitColorMap(serverDir string) {
+	activeServerDir = serverDir
+	BuildTextureColorMap(serverDir)
+}
+
+// GetBlockColor returns the color for a block name.
+// Priority: 1) texture-extracted color, 2) hardcoded palette, 3) name-based inference
 func GetBlockColor(name string) color.RGBA {
+	// 1. Check texture-extracted colors (most accurate, includes all modded blocks)
+	if textureColors != nil {
+		if c, ok := textureColors[name]; ok {
+			return c
+		}
+	}
+
+	// 2. Check hardcoded palette (accurate vanilla colors)
 	if c, ok := BlockColors[name]; ok {
 		return c
 	}
-	// Try without namespace
-	if len(name) > 10 && name[:10] == "minecraft:" {
-		// Already has namespace, not found
-		return DefaultColor
-	}
-	// Try with namespace
+
+	// Try with minecraft: prefix
 	if c, ok := BlockColors["minecraft:"+name]; ok {
 		return c
 	}
+
+	// 3. Smart fallback: infer color from block name keywords
+	shortName := name
+	if idx := strings.Index(name, ":"); idx >= 0 {
+		shortName = name[idx+1:]
+	}
+
+	return inferColorFromName(shortName)
+}
+
+func inferColorFromName(name string) color.RGBA {
+	// Leaves
+	if strings.Contains(name, "leaves") || strings.Contains(name, "leaf") {
+		return color.RGBA{59, 107, 22, 200}
+	}
+	// Logs / wood
+	if strings.Contains(name, "_log") || strings.Contains(name, "_wood") || strings.Contains(name, "_stem") {
+		return color.RGBA{109, 85, 50, 255}
+	}
+	// Planks
+	if strings.Contains(name, "planks") || strings.Contains(name, "plank") {
+		return color.RGBA{162, 130, 78, 255}
+	}
+	// Stairs, slabs, fences, walls (wood-like)
+	if strings.Contains(name, "_stairs") || strings.Contains(name, "_slab") || strings.Contains(name, "_fence") || strings.Contains(name, "_wall") {
+		return color.RGBA{140, 120, 85, 255}
+	}
+	// Ores
+	if strings.Contains(name, "_ore") {
+		return color.RGBA{128, 128, 128, 255} // Stone-like
+	}
+	// Flowers, plants, grass
+	if strings.Contains(name, "flower") || strings.Contains(name, "petal") || strings.Contains(name, "blossom") || strings.Contains(name, "rose") || strings.Contains(name, "tulip") {
+		return color.RGBA{180, 80, 120, 255} // Pinkish
+	}
+	if strings.Contains(name, "grass") || strings.Contains(name, "fern") || strings.Contains(name, "clover") || strings.Contains(name, "bush") || strings.Contains(name, "plant") || strings.Contains(name, "crop") || strings.Contains(name, "vine") || strings.Contains(name, "moss") {
+		return color.RGBA{91, 169, 60, 255} // Green
+	}
+	// Sand
+	if strings.Contains(name, "sand") {
+		return color.RGBA{219, 207, 163, 255}
+	}
+	// Stone, rock, basalt
+	if strings.Contains(name, "stone") || strings.Contains(name, "rock") || strings.Contains(name, "basalt") || strings.Contains(name, "slag") || strings.Contains(name, "chalk") {
+		return color.RGBA{140, 140, 140, 255}
+	}
+	// Dirt, mud, soil
+	if strings.Contains(name, "dirt") || strings.Contains(name, "mud") || strings.Contains(name, "soil") || strings.Contains(name, "podzol") {
+		return color.RGBA{134, 96, 67, 255}
+	}
+	// Water, fluid, oil
+	if strings.Contains(name, "water") || strings.Contains(name, "fluid") {
+		return color.RGBA{64, 100, 209, 200}
+	}
+	if strings.Contains(name, "oil") {
+		return color.RGBA{30, 30, 30, 200}
+	}
+	if strings.Contains(name, "lava") || strings.Contains(name, "magma") {
+		return color.RGBA{207, 92, 15, 255}
+	}
+	// Ice, snow, frost
+	if strings.Contains(name, "ice") || strings.Contains(name, "snow") || strings.Contains(name, "frost") {
+		return color.RGBA{200, 220, 250, 255}
+	}
+	// Brick
+	if strings.Contains(name, "brick") {
+		return color.RGBA{150, 97, 76, 255}
+	}
+	// Glass
+	if strings.Contains(name, "glass") {
+		return color.RGBA{175, 213, 228, 100}
+	}
+	// Metal blocks
+	if strings.Contains(name, "iron") || strings.Contains(name, "metal") || strings.Contains(name, "steel") {
+		return color.RGBA{200, 200, 200, 255}
+	}
+	// Barnacles, coral, sea stuff
+	if strings.Contains(name, "coral") || strings.Contains(name, "barnacle") || strings.Contains(name, "sea") {
+		return color.RGBA{100, 140, 160, 255}
+	}
+	// Mushroom
+	if strings.Contains(name, "mushroom") || strings.Contains(name, "fungus") {
+		return color.RGBA{149, 112, 80, 255}
+	}
+
 	return DefaultColor
 }

@@ -15,22 +15,23 @@ import (
 func (a *Agent) PollPlayerPositions() {
 	a.serversMu.RLock()
 	type serverInfo struct {
-		uuid, dataDir, status string
-		players               []string
+		uuid, dataDir string
+		isRunning     bool
+		players       []string
 	}
 	var servers []serverInfo
 	for uuid, srv := range a.servers {
 		servers = append(servers, serverInfo{
-			uuid:    uuid,
-			dataDir: srv.DataDir,
-			status:  srv.Status,
-			players: srv.GetCurrentPlayers(),
+			uuid:      uuid,
+			dataDir:   srv.DataDir,
+			isRunning: string(srv.Status) == "running",
+			players:   srv.GetCurrentPlayers(),
 		})
 	}
 	a.serversMu.RUnlock()
 
 	for _, srv := range servers {
-		if srv.status != "running" || len(srv.players) == 0 {
+		if !srv.isRunning || len(srv.players) == 0 {
 			continue
 		}
 

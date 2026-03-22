@@ -782,13 +782,22 @@ func (a *Agent) updateAgent(cmd api.Command) error {
 
 	log.Printf("[Update] Image pulled successfully. Restarting container...")
 
-	// Use a lightweight Alpine container to run docker compose up -d
-	// which will recreate the agent container with the new image.
+	// Find the host path of docker-compose.yml by inspecting our own container.
+	// Docker volume mounts always reference HOST paths, not container paths.
+	hostComposePath := a.findHostComposePath()
+	if hostComposePath == "" {
+		// Fallback: common paths
+		hostComposePath = "/docker-compose.yml"
+		log.Printf("[Update] Could not detect host compose path, using fallback: %s", hostComposePath)
+	} else {
+		log.Printf("[Update] Detected host compose path: %s", hostComposePath)
+	}
+
+	// Use docker:cli (has compose v2) to recreate the container with the new image.
 	// Must use a separate container because compose recreate kills this process.
 	restartCmd := exec.Command("docker", "run", "--rm", "-d",
 		"-v", "/var/run/docker.sock:/var/run/docker.sock",
-		"-v", "/docker-compose.yml:/docker-compose.yml:ro",
-		"-w", "/",
+		"-v", hostComposePath+":/docker-compose.yml:ro",
 		"docker:cli",
 		"docker", "compose", "-p", "redstonecore", "-f", "/docker-compose.yml",
 		"up", "-d", "--force-recreate")
@@ -796,22 +805,25 @@ func (a *Agent) updateAgent(cmd api.Command) error {
 	restartCmd.Stderr = os.Stderr
 
 	if err := restartCmd.Run(); err != nil {
-		// Fallback: try docker restart directly (simpler but doesn't pick up new image)
-		log.Printf("[Update] Compose restart failed: %v, trying direct restart...", err)
-		fallbackCmd := exec.Command("docker", "restart", "redstonecore")
-		fallbackCmd.Stdout = os.Stdout
-		fallbackCmd.Stderr = os.Stderr
-		if err := fallbackCmd.Run(); err != nil {
-			return fmt.Errorf("failed to restart container: %w", err)
-		}
+		log.Printf("[Update] Compose restart failed: %v", err)
+		return fmt.Errorf("failed to start restart command: %w", err)
 	}
 
 	log.Printf("[Update] Restart command initiated. Container will restart shortly...")
-
-	// Give Docker a moment to start the restart process
 	time.Sleep(2 * time.Second)
 
 	return nil
+}
+
+// findHostComposePath inspects the agent container to find the host path of docker-compose.yml
+func (a *Agent) findHostComposePath() string {
+	out, err := exec.Command("docker", "inspect", "redstonecore",
+		"--format", `{{range .Mounts}}{{if eq .Destination "/docker-compose.yml"}}{{.Source}}{{end}}{{end}}`).Output()
+	if err != nil {
+		log.Printf("[Update] Failed to inspect container mounts: %v", err)
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 // createModpackServer handles the create_modpack_server command from cloud

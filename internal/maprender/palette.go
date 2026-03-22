@@ -285,17 +285,49 @@ func InitColorMap(serverDir string) {
 	BuildTextureColorMap(serverDir)
 }
 
+// Biome-tinted blocks — the raw textures are grayscale overlays,
+// so we must use hardcoded colors instead of texture-extracted ones.
+var biomeTintedBlocks = map[string]bool{
+	"minecraft:water":                    true,
+	"minecraft:grass_block":              true,
+	"minecraft:short_grass":              true,
+	"minecraft:tall_grass":               true,
+	"minecraft:fern":                     true,
+	"minecraft:large_fern":               true,
+	"minecraft:oak_leaves":               true,
+	"minecraft:spruce_leaves":            true,
+	"minecraft:birch_leaves":             true,
+	"minecraft:jungle_leaves":            true,
+	"minecraft:acacia_leaves":            true,
+	"minecraft:dark_oak_leaves":          true,
+	"minecraft:mangrove_leaves":          true,
+	"minecraft:azalea_leaves":            true,
+	"minecraft:flowering_azalea_leaves":  true,
+	"minecraft:vine":                     true,
+	"minecraft:lily_pad":                 true,
+	"minecraft:sugar_cane":               true,
+	"minecraft:seagrass":                 true,
+	"minecraft:tall_seagrass":            true,
+}
+
 // GetBlockColor returns the color for a block name.
-// Priority: 1) texture-extracted color, 2) hardcoded palette, 3) name-based inference
+// Priority: 1) hardcoded for biome-tinted blocks, 2) texture-extracted, 3) hardcoded palette, 4) name-based inference
 func GetBlockColor(name string) color.RGBA {
-	// 1. Check texture-extracted colors (most accurate, includes all modded blocks)
+	// 1. Biome-tinted blocks always use hardcoded colors (textures are grayscale overlays)
+	if biomeTintedBlocks[name] {
+		if c, ok := BlockColors[name]; ok {
+			return c
+		}
+	}
+
+	// 2. Check texture-extracted colors (most accurate for everything else)
 	if textureColors != nil {
 		if c, ok := textureColors[name]; ok {
 			return c
 		}
 	}
 
-	// 2. Check hardcoded palette (accurate vanilla colors)
+	// 3. Check hardcoded palette
 	if c, ok := BlockColors[name]; ok {
 		return c
 	}

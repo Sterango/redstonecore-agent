@@ -267,6 +267,16 @@ func (a *Agent) discoverServers() error {
 		}
 
 		serverDir := filepath.Join(serversDir, entry.Name())
+
+		// Skip servers marked as deleted
+		deletedMarker := filepath.Join(serverDir, ".deleted")
+		if _, err := os.Stat(deletedMarker); err == nil {
+			log.Printf("Skipping deleted server directory: %s", entry.Name())
+			// Clean up the directory since it was marked for deletion
+			os.RemoveAll(serverDir)
+			continue
+		}
+
 		uuidFile := filepath.Join(serverDir, ".uuid")
 
 		// Check if this server has a UUID file
@@ -730,31 +740,54 @@ func (a *Agent) createServer(cmd api.Command) error {
 
 // deleteServer handles the delete_server command from cloud
 func (a *Agent) deleteServer(cmd api.Command) error {
+	// Get server UUID from command or payload (payload used when server record is already deleted)
+	serverUUID := cmd.ServerUUID
+	if serverUUID == "" && cmd.Payload != nil {
+		if uuid, ok := cmd.Payload["server_uuid"].(string); ok {
+			serverUUID = uuid
+		}
+	}
+
+	// Get server name from payload as fallback
+	serverName := ""
+	if cmd.Payload != nil {
+		if name, ok := cmd.Payload["server_name"].(string); ok {
+			serverName = name
+		}
+	}
+
 	a.serversMu.Lock()
-	server, ok := a.servers[cmd.ServerUUID]
-	if !ok {
-		a.serversMu.Unlock()
-		log.Printf("Warning: Server not found for delete: %s", cmd.ServerUUID)
-		return nil // Server doesn't exist, consider it deleted
-	}
+	server, ok := a.servers[serverUUID]
+	if ok {
+		serverName = server.Name
 
-	// Stop the server if running
-	if server.Status == minecraft.StatusRunning {
-		log.Printf("Stopping server %s before deletion...", server.Name)
-		server.Stop()
-	}
+		// Stop the server if running
+		if server.Status == minecraft.StatusRunning {
+			log.Printf("Stopping server %s before deletion...", server.Name)
+			server.Stop()
+		}
 
-	// Remove from servers map
-	delete(a.servers, cmd.ServerUUID)
+		// Remove from servers map
+		delete(a.servers, serverUUID)
+	}
 	a.serversMu.Unlock()
 
-	// Stop console buffer
-	a.stopConsoleBuffer(cmd.ServerUUID)
+	if !ok && serverName == "" {
+		log.Printf("Warning: Server not found for delete: %s", serverUUID)
+		return nil
+	}
 
-	// Delete server files if requested
-	if cmd.Payload != nil {
-		if deleteFiles, ok := cmd.Payload["delete_files"].(bool); ok && deleteFiles {
-			serverDir := filepath.Join(a.config.DataDir, "servers", server.Name)
+	// Stop console buffer
+	a.stopConsoleBuffer(serverUUID)
+
+	// Always delete files and write .deleted marker to prevent rediscovery
+	if serverName != "" {
+		serverDir := filepath.Join(a.config.DataDir, "servers", serverName)
+		if _, err := os.Stat(serverDir); err == nil {
+			// Write .deleted marker first (in case removal is interrupted)
+			markerPath := filepath.Join(serverDir, ".deleted")
+			os.WriteFile(markerPath, []byte("deleted"), 0644)
+
 			log.Printf("Deleting server files: %s", serverDir)
 			if err := os.RemoveAll(serverDir); err != nil {
 				log.Printf("Warning: Failed to delete server files: %v", err)
@@ -762,7 +795,7 @@ func (a *Agent) deleteServer(cmd api.Command) error {
 		}
 	}
 
-	log.Printf("Server %s deleted successfully!", server.Name)
+	log.Printf("Server %s (%s) deleted successfully!", serverName, serverUUID)
 	return nil
 }
 

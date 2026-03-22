@@ -43,8 +43,8 @@ func renderFlat(region *Region) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// renderRelief3D renders with directional lighting, shadow casting, and cliff edges
-// to create a dramatic 3D terrain effect.
+// renderRelief3D renders with directional lighting, shadow casting, and edge highlights
+// to create a dramatic 3D terrain effect. No pixel displacement — tiles align perfectly.
 func renderRelief3D(region *Region) ([]byte, error) {
 	// First pass: build heightmap and block name map
 	heights := [regionBlocks][regionBlocks]int{}
@@ -58,19 +58,9 @@ func renderRelief3D(region *Region) ([]byte, error) {
 		}
 	}
 
-	// Render with oblique displacement + directional lighting
-	// The tile is taller to accommodate height displacement
-	tileW := regionBlocks
-	tileH := regionBlocks + 128 // extra space for height displacement
-	img := image.NewRGBA(image.Rect(0, 0, tileW, tileH))
+	img := image.NewRGBA(image.Rect(0, 0, regionBlocks, regionBlocks))
 
-	// Height displacement scale: each Y level shifts up by 0.25 pixels
-	heightScale := 0.25
-	// Vertical offset so sea level (63) maps to the center of the tile
-	baseOffset := 128 // pixels of extra space at the top
-
-	// Render back to front (south to north) for painter's algorithm
-	for z := regionBlocks - 1; z >= 0; z-- {
+	for z := 0; z < regionBlocks; z++ {
 		for x := 0; x < regionBlocks; x++ {
 			blockName := blocks[z][x]
 			y := heights[z][x]
@@ -81,97 +71,89 @@ func renderRelief3D(region *Region) ([]byte, error) {
 
 			c := GetBlockColor(blockName)
 
-			// Calculate directional lighting (light from NW, 315 degrees)
-			// Compare height with south and east neighbors for slope
-			var slopeS, slopeE float64
+			// Directional lighting from NW (light hits north-west facing slopes)
+			var slopeS, slopeE, slopeN, slopeW float64
 			if z < regionBlocks-1 {
 				slopeS = float64(y - heights[z+1][x])
 			}
 			if x < regionBlocks-1 {
 				slopeE = float64(y - heights[z][x+1])
 			}
+			if z > 0 {
+				slopeN = float64(y - heights[z-1][x])
+			}
+			if x > 0 {
+				slopeW = float64(y - heights[z][x-1])
+			}
 
-			// NW light: slopes facing NW (higher to the south and east) are brighter
-			lightFactor := (slopeS + slopeE) * 0.08
-			lightFactor = clamp(lightFactor, -0.35, 0.35)
-
-			// Apply ambient + directional light
+			// NW illumination: bright where terrain faces NW (south+east slopes positive)
+			lightFactor := (slopeS + slopeE) * 0.1
+			lightFactor = clamp(lightFactor, -0.4, 0.4)
 			c = applyLighting(c, lightFactor)
 
-			// Screen Y position with height displacement
-			screenY := z + baseOffset - int(float64(y-63)*heightScale)
-			if screenY < 0 || screenY >= tileH {
-				continue
+			// Edge darkening: draw dark edges where height drops sharply to south or east
+			// This creates the visible "cliff lines" that give depth
+			if slopeS > 2 {
+				edgeDarken := clamp(slopeS*0.04, 0, 0.5)
+				c = darken(c, edgeDarken)
+			}
+			if slopeE > 2 {
+				edgeDarken := clamp(slopeE*0.03, 0, 0.4)
+				c = darken(c, edgeDarken)
 			}
 
-			// Draw the top face
-			img.Set(x, screenY, color.NRGBA{R: c.R, G: c.G, B: c.B, A: c.A})
-
-			// Draw cliff face (vertical wall) if this block is higher than the one to the south
-			if z < regionBlocks-1 {
-				southY := heights[z+1][x]
-				if y > southY {
-					cliffHeight := float64(y-southY) * heightScale
-					cliffColor := darken(c, 0.45) // cliff faces are much darker
-					for dy := 1; dy <= int(cliffHeight)+1; dy++ {
-						py := screenY + dy
-						if py >= 0 && py < tileH {
-							img.Set(x, py, color.NRGBA{R: cliffColor.R, G: cliffColor.G, B: cliffColor.B, A: cliffColor.A})
-						}
-					}
-				}
+			// Highlight edges facing the light (north and west drops = lit cliff top)
+			if slopeN > 2 {
+				edgeBright := clamp(slopeN*0.03, 0, 0.3)
+				c = applyLighting(c, edgeBright)
+			}
+			if slopeW > 2 {
+				edgeBright := clamp(slopeW*0.02, 0, 0.2)
+				c = applyLighting(c, edgeBright)
 			}
 
-			// Cast shadow from NW: if a neighbor to the north-west is significantly higher,
-			// darken this block
+			// Shadow casting: blocks to the NW that are taller cast shadows SE
 			if x > 0 && z > 0 {
 				nwHeight := heights[z-1][x-1]
 				if nwHeight > y+3 {
-					shadowStrength := clamp(float64(nwHeight-y)*0.03, 0, 0.4)
-					shadowColor := darken(c, shadowStrength)
-					img.Set(x, screenY, color.NRGBA{R: shadowColor.R, G: shadowColor.G, B: shadowColor.B, A: shadowColor.A})
+					shadowStrength := clamp(float64(nwHeight-y)*0.025, 0, 0.35)
+					c = darken(c, shadowStrength)
 				}
 			}
-		}
-	}
-
-	// Crop the image to remove unused top space
-	// Find the first non-transparent row
-	cropTop := 0
-	for row := 0; row < tileH; row++ {
-		hasPixel := false
-		for col := 0; col < tileW; col++ {
-			_, _, _, a := img.At(col, row).RGBA()
-			if a > 0 {
-				hasPixel = true
-				break
+			// Extended shadow: check 2 blocks NW for longer shadows
+			if x > 1 && z > 1 {
+				nw2Height := heights[z-2][x-2]
+				if nw2Height > y+6 {
+					shadowStrength := clamp(float64(nw2Height-y)*0.015, 0, 0.2)
+					c = darken(c, shadowStrength)
+				}
 			}
-		}
-		if hasPixel {
-			cropTop = row
-			break
-		}
-	}
 
-	// Create final 512x512 tile by mapping the content
-	finalImg := image.NewRGBA(image.Rect(0, 0, regionBlocks, regionBlocks))
-	srcOffset := cropTop
-	for z := 0; z < regionBlocks; z++ {
-		for x := 0; x < regionBlocks; x++ {
-			srcY := z + srcOffset
-			if srcY >= 0 && srcY < tileH {
-				r, g, b, a := img.At(x, srcY).RGBA()
-				finalImg.Set(x, z, color.NRGBA{
-					R: uint8(r >> 8), G: uint8(g >> 8),
-					B: uint8(b >> 8), A: uint8(a >> 8),
-				})
+			// Subtle ambient occlusion: if surrounded by taller blocks, darken slightly
+			taller := 0
+			if z > 0 && heights[z-1][x] > y {
+				taller++
 			}
+			if z < regionBlocks-1 && heights[z+1][x] > y {
+				taller++
+			}
+			if x > 0 && heights[z][x-1] > y {
+				taller++
+			}
+			if x < regionBlocks-1 && heights[z][x+1] > y {
+				taller++
+			}
+			if taller >= 3 {
+				c = darken(c, 0.1)
+			}
+
+			img.Set(x, z, color.NRGBA{R: c.R, G: c.G, B: c.B, A: c.A})
 		}
 	}
 
 	var buf bytes.Buffer
 	encoder := &png.Encoder{CompressionLevel: png.BestCompression}
-	if err := encoder.Encode(&buf, finalImg); err != nil {
+	if err := encoder.Encode(&buf, img); err != nil {
 		return nil, err
 	}
 	return buf.Bytes(), nil

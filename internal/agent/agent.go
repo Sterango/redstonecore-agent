@@ -782,18 +782,28 @@ func (a *Agent) updateAgent(cmd api.Command) error {
 
 	log.Printf("[Update] Image pulled successfully. Restarting container...")
 
-	// Use a temporary alpine container to run docker compose
-	// This ensures the restart command survives when this container is killed
+	// Use a lightweight Alpine container to run docker compose up -d
+	// which will recreate the agent container with the new image.
+	// Must use a separate container because compose recreate kills this process.
 	restartCmd := exec.Command("docker", "run", "--rm", "-d",
 		"-v", "/var/run/docker.sock:/var/run/docker.sock",
 		"-v", "/docker-compose.yml:/docker-compose.yml:ro",
-		"docker/compose:latest",
-		"-p", "redstonecore", "-f", "/docker-compose.yml", "up", "-d", "--force-recreate")
+		"-w", "/",
+		"docker:cli",
+		"docker", "compose", "-p", "redstonecore", "-f", "/docker-compose.yml",
+		"up", "-d", "--force-recreate")
 	restartCmd.Stdout = os.Stdout
 	restartCmd.Stderr = os.Stderr
 
 	if err := restartCmd.Run(); err != nil {
-		return fmt.Errorf("failed to start restart command: %w", err)
+		// Fallback: try docker restart directly (simpler but doesn't pick up new image)
+		log.Printf("[Update] Compose restart failed: %v, trying direct restart...", err)
+		fallbackCmd := exec.Command("docker", "restart", "redstonecore")
+		fallbackCmd.Stdout = os.Stdout
+		fallbackCmd.Stderr = os.Stderr
+		if err := fallbackCmd.Run(); err != nil {
+			return fmt.Errorf("failed to restart container: %w", err)
+		}
 	}
 
 	log.Printf("[Update] Restart command initiated. Container will restart shortly...")

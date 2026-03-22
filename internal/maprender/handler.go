@@ -3,6 +3,7 @@ package maprender
 import (
 	"encoding/base64"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -80,15 +81,36 @@ func HandleMapTile(serverDir, serverUUID, dataDir string, params map[string]inte
 
 	log.Printf("[Map] Reading region file: %s", regionFile)
 
-	data, err := os.ReadFile(regionFile)
+	// Use os.Open + Read instead of ReadFile to debug 0-byte reads
+	f, err := os.Open(regionFile)
 	if err != nil {
-		log.Printf("[Map] Failed to read %s: %v", regionFile, err)
+		log.Printf("[Map] Failed to open %s: %v", regionFile, err)
 		return map[string]interface{}{
 			"error": fmt.Sprintf("region file not found: r.%d.%d.mca: %v", x, z, err),
 		}
 	}
 
-	log.Printf("[Map] Read %d bytes from r.%d.%d.mca", len(data), x, z)
+	fi, err := f.Stat()
+	if err != nil {
+		f.Close()
+		log.Printf("[Map] Failed to stat %s: %v", regionFile, err)
+		return map[string]interface{}{
+			"error": fmt.Sprintf("stat error: %v", err),
+		}
+	}
+	fileSize := fi.Size()
+
+	data := make([]byte, fileSize)
+	n, err := io.ReadFull(f, data)
+	f.Close()
+	if err != nil {
+		log.Printf("[Map] Failed to read %s: read %d of %d bytes: %v", regionFile, n, fileSize, err)
+		return map[string]interface{}{
+			"error": fmt.Sprintf("read error: %v", err),
+		}
+	}
+
+	log.Printf("[Map] Read %d bytes (file size: %d) from r.%d.%d.mca", n, fileSize, x, z)
 
 	// Parse region
 	region, err := ParseRegion(data, x, z)

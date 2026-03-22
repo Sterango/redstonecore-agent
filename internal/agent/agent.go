@@ -792,20 +792,18 @@ func (a *Agent) updateAgent(cmd api.Command) error {
 		log.Printf("[Update] Detected host compose path: %s", hostComposePath)
 	}
 
-	// The .env file is in the same directory as docker-compose.yml
+	// Mount the entire project directory so compose resolves relative paths
+	// (./data, ./config, etc.) correctly against the real host paths.
 	hostComposeDir := filepath.Dir(hostComposePath)
-	hostEnvPath := filepath.Join(hostComposeDir, ".env")
 
 	// Use docker:cli (has compose v2) to recreate the container with the new image.
 	// Must use a separate container because compose recreate kills this process.
-	// Mount both the compose file AND .env file so environment variables are preserved.
 	restartCmd := exec.Command("docker", "run", "--rm", "-d",
 		"-v", "/var/run/docker.sock:/var/run/docker.sock",
-		"-v", hostComposePath+":/app/docker-compose.yml:ro",
-		"-v", hostEnvPath+":/app/.env:ro",
-		"-w", "/app",
+		"-v", hostComposeDir+":"+hostComposeDir,
+		"-w", hostComposeDir,
 		"docker:cli",
-		"docker", "compose", "-p", "redstonecore", "-f", "/app/docker-compose.yml",
+		"docker", "compose", "-p", "redstonecore",
 		"up", "-d", "--force-recreate")
 	restartCmd.Stdout = os.Stdout
 	restartCmd.Stderr = os.Stderr

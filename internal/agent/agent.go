@@ -676,6 +676,7 @@ func (a *Agent) createServer(cmd api.Command) error {
 	name, _ := cmd.Payload["name"].(string)
 	serverType, _ := cmd.Payload["type"].(string)
 	version, _ := cmd.Payload["minecraft_version"].(string)
+	loaderVersion, _ := cmd.Payload["loader_version"].(string)
 	port, _ := cmd.Payload["port"].(float64)
 	maxPlayers, _ := cmd.Payload["max_players"].(float64)
 	ram, _ := cmd.Payload["allocated_ram_mb"].(float64)
@@ -684,7 +685,7 @@ func (a *Agent) createServer(cmd api.Command) error {
 		return fmt.Errorf("server name is required")
 	}
 
-	log.Printf("Creating server: %s (type: %s, version: %s)", name, serverType, version)
+	log.Printf("Creating server: %s (type: %s, version: %s, loader: %s)", name, serverType, version, loaderVersion)
 
 	// Create server directory
 	serverDir := filepath.Join(a.config.DataDir, "servers", name)
@@ -694,7 +695,13 @@ func (a *Agent) createServer(cmd api.Command) error {
 
 	// Download the server JAR
 	downloader := minecraft.NewDownloader(filepath.Join(a.config.DataDir, "cache"))
-	jarPath, err := downloader.DownloadServer(minecraft.ServerType(serverType), version, serverDir)
+	var jarPath string
+	var err error
+	if loaderVersion != "" {
+		jarPath, err = downloader.DownloadServerWithLoader(minecraft.ServerType(serverType), version, loaderVersion, serverDir)
+	} else {
+		jarPath, err = downloader.DownloadServer(minecraft.ServerType(serverType), version, serverDir)
+	}
 	if err != nil {
 		return fmt.Errorf("failed to download server JAR: %w", err)
 	}

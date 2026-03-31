@@ -402,6 +402,7 @@ func (h *DefaultHandler) handleRead(id, path string) *Response {
 
 func (h *DefaultHandler) handleWrite(id, path string, data map[string]interface{}) *Response {
 	content, _ := data["content"].(string)
+	encoding, _ := data["encoding"].(string)
 
 	// Ensure parent directory exists
 	dir := filepath.Dir(path)
@@ -409,7 +410,18 @@ func (h *DefaultHandler) handleWrite(id, path string, data map[string]interface{
 		return &Response{ID: id, Success: false, Error: err.Error()}
 	}
 
-	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+	var fileData []byte
+	if encoding == "base64" {
+		var err error
+		fileData, err = base64.StdEncoding.DecodeString(content)
+		if err != nil {
+			return &Response{ID: id, Success: false, Error: "failed to decode base64: " + err.Error()}
+		}
+	} else {
+		fileData = []byte(content)
+	}
+
+	if err := os.WriteFile(path, fileData, 0644); err != nil {
 		return &Response{ID: id, Success: false, Error: err.Error()}
 	}
 

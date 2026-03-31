@@ -693,25 +693,12 @@ func (a *Agent) createServer(cmd api.Command) error {
 		return fmt.Errorf("failed to create server directory: %w", err)
 	}
 
-	// Download the server JAR
-	downloader := minecraft.NewDownloader(filepath.Join(a.config.DataDir, "cache"))
-	var jarPath string
-	var err error
-	if loaderVersion != "" {
-		jarPath, err = downloader.DownloadServerWithLoader(minecraft.ServerType(serverType), version, loaderVersion, serverDir)
-	} else {
-		jarPath, err = downloader.DownloadServer(minecraft.ServerType(serverType), version, serverDir)
-	}
-	if err != nil {
-		return fmt.Errorf("failed to download server JAR: %w", err)
-	}
+	// Save UUID file immediately so server is discoverable on restart even if download fails
+	uuidFile := filepath.Join(serverDir, ".uuid")
+	os.WriteFile(uuidFile, []byte(cmd.ServerUUID), 0644)
 
-	log.Printf("Downloaded JAR to: %s", jarPath)
-
-	// Create console buffer for this server
+	// Register server in map immediately so it's accessible for file operations
 	consoleBuf := a.createConsoleBuffer(cmd.ServerUUID)
-
-	// Create server instance
 	server := minecraft.NewServer(minecraft.ServerConfig{
 		UUID:             cmd.ServerUUID,
 		Name:             name,
@@ -727,20 +714,29 @@ func (a *Agent) createServer(cmd api.Command) error {
 		OnPlayerEvent: a.createPlayerEventCallback(cmd.ServerUUID),
 	})
 
+	a.serversMu.Lock()
+	a.servers[cmd.ServerUUID] = server
+	a.serversMu.Unlock()
+
 	// Ensure server.properties is set up
 	if err := server.EnsureServerProperties(); err != nil {
 		log.Printf("Warning: Failed to setup server.properties: %v", err)
 	}
 
-	// Save UUID file
-	uuidFile := filepath.Join(serverDir, ".uuid")
-	os.WriteFile(uuidFile, []byte(cmd.ServerUUID), 0644)
+	// Download the server JAR
+	downloader := minecraft.NewDownloader(filepath.Join(a.config.DataDir, "cache"))
+	var jarPath string
+	var err error
+	if loaderVersion != "" {
+		jarPath, err = downloader.DownloadServerWithLoader(minecraft.ServerType(serverType), version, loaderVersion, serverDir)
+	} else {
+		jarPath, err = downloader.DownloadServer(minecraft.ServerType(serverType), version, serverDir)
+	}
+	if err != nil {
+		return fmt.Errorf("failed to download server JAR: %w", err)
+	}
 
-	// Add to servers map
-	a.serversMu.Lock()
-	a.servers[cmd.ServerUUID] = server
-	a.serversMu.Unlock()
-
+	log.Printf("Downloaded JAR to: %s", jarPath)
 	log.Printf("Server %s created successfully!", name)
 	return nil
 }
@@ -910,6 +906,10 @@ func (a *Agent) createModpackServer(cmd api.Command) error {
 		return fmt.Errorf("failed to create server directory: %w", err)
 	}
 
+	// Save UUID file immediately so server is discoverable on restart even if download fails
+	uuidFile := filepath.Join(serverDir, ".uuid")
+	os.WriteFile(uuidFile, []byte(cmd.ServerUUID), 0644)
+
 	// Determine server type based on loader
 	var serverType minecraft.ServerType
 	switch loader {
@@ -929,6 +929,27 @@ func (a *Agent) createModpackServer(cmd api.Command) error {
 	if mcVersion == "" {
 		mcVersion = "1.20.1"
 	}
+
+	// Register server in map immediately so it's accessible for file operations
+	consoleBuf := a.createConsoleBuffer(cmd.ServerUUID)
+	server := minecraft.NewServer(minecraft.ServerConfig{
+		UUID:             cmd.ServerUUID,
+		Name:             name,
+		Type:             serverType,
+		MinecraftVersion: mcVersion,
+		Port:             int(port),
+		MaxPlayers:       int(maxPlayers),
+		AllocatedRAM:     int(ram),
+		DataDir:          serverDir,
+		OnConsoleLine: func(line string) {
+			consoleBuf.AddLine(line)
+		},
+		OnPlayerEvent: a.createPlayerEventCallback(cmd.ServerUUID),
+	})
+
+	a.serversMu.Lock()
+	a.servers[cmd.ServerUUID] = server
+	a.serversMu.Unlock()
 
 	var jarPath string
 
@@ -1076,38 +1097,10 @@ func (a *Agent) createModpackServer(cmd api.Command) error {
 
 	log.Printf("Server JAR/script: %s", jarPath)
 
-	// Create console buffer for this server
-	consoleBuf := a.createConsoleBuffer(cmd.ServerUUID)
-
-	// Create server instance
-	server := minecraft.NewServer(minecraft.ServerConfig{
-		UUID:             cmd.ServerUUID,
-		Name:             name,
-		Type:             serverType,
-		MinecraftVersion: mcVersion,
-		Port:             int(port),
-		MaxPlayers:       int(maxPlayers),
-		AllocatedRAM:     int(ram),
-		DataDir:          serverDir,
-		OnConsoleLine: func(line string) {
-			consoleBuf.AddLine(line)
-		},
-		OnPlayerEvent: a.createPlayerEventCallback(cmd.ServerUUID),
-	})
-
 	// Ensure server.properties is set up
 	if err := server.EnsureServerProperties(); err != nil {
 		log.Printf("Warning: Failed to setup server.properties: %v", err)
 	}
-
-	// Save UUID file
-	uuidFile := filepath.Join(serverDir, ".uuid")
-	os.WriteFile(uuidFile, []byte(cmd.ServerUUID), 0644)
-
-	// Add to servers map
-	a.serversMu.Lock()
-	a.servers[cmd.ServerUUID] = server
-	a.serversMu.Unlock()
 
 	log.Printf("Modpack server %s created successfully! (%s %s)",
 		name, loader, mcVersion)

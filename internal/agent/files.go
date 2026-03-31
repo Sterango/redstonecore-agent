@@ -231,7 +231,7 @@ func (a *Agent) filesWrite(cmd api.Command, server *minecraft.Server) (map[strin
 
 	// Ensure parent directory exists
 	dir := filepath.Dir(fullPath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0775); err != nil {
 		return nil, fmt.Errorf("failed to create directory: %w", err)
 	}
 
@@ -324,7 +324,7 @@ func (a *Agent) filesMkdir(cmd api.Command, server *minecraft.Server) (map[strin
 
 	log.Printf("[Files] Creating directory: %s", fullPath)
 
-	if err := os.MkdirAll(fullPath, 0755); err != nil {
+	if err := os.MkdirAll(fullPath, 0775); err != nil {
 		return nil, fmt.Errorf("failed to create directory: %w", err)
 	}
 
@@ -363,7 +363,7 @@ func (a *Agent) filesUpload(cmd api.Command, server *minecraft.Server) (map[stri
 
 	// Ensure parent directory exists
 	dir := filepath.Dir(fullPath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0775); err != nil {
 		return nil, fmt.Errorf("failed to create directory: %w", err)
 	}
 

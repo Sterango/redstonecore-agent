@@ -207,7 +207,7 @@ func (a *Agent) initServers() error {
 		serverDir := filepath.Join(a.config.DataDir, "servers", serverCfg.Name)
 
 		// Create server directory
-		if err := os.MkdirAll(serverDir, 0755); err != nil {
+		if err := os.MkdirAll(serverDir, 0775); err != nil {
 			return fmt.Errorf("failed to create server directory: %w", err)
 		}
 
@@ -689,7 +689,7 @@ func (a *Agent) createServer(cmd api.Command) error {
 
 	// Create server directory
 	serverDir := filepath.Join(a.config.DataDir, "servers", name)
-	if err := os.MkdirAll(serverDir, 0755); err != nil {
+	if err := os.MkdirAll(serverDir, 0775); err != nil {
 		return fmt.Errorf("failed to create server directory: %w", err)
 	}
 
@@ -906,7 +906,7 @@ func (a *Agent) createModpackServer(cmd api.Command) error {
 
 	// Create server directory
 	serverDir := filepath.Join(a.config.DataDir, "servers", name)
-	if err := os.MkdirAll(serverDir, 0755); err != nil {
+	if err := os.MkdirAll(serverDir, 0775); err != nil {
 		return fmt.Errorf("failed to create server directory: %w", err)
 	}
 
@@ -1535,7 +1535,7 @@ func (a *Agent) installPlugin(cmd api.Command, server *minecraft.Server) error {
 
 	// Create plugins directory
 	pluginsDir := filepath.Join(server.DataDir, "plugins")
-	if err := os.MkdirAll(pluginsDir, 0755); err != nil {
+	if err := os.MkdirAll(pluginsDir, 0775); err != nil {
 		return fmt.Errorf("failed to create plugins directory: %w", err)
 	}
 
@@ -1792,7 +1792,7 @@ func (a *Agent) configureVelocityForwarding(cmd api.Command, server *minecraft.S
 
 	// Create config directory if it doesn't exist
 	configDir := filepath.Join(server.DataDir, "config")
-	if err := os.MkdirAll(configDir, 0755); err != nil {
+	if err := os.MkdirAll(configDir, 0775); err != nil {
 		return fmt.Errorf("failed to create config directory: %w", err)
 	}
 

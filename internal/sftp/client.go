@@ -10,7 +10,9 @@ import (
 	"io"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -212,6 +214,17 @@ type ArchiveTask struct {
 	StartedAt  time.Time `json:"started_at"`
 }
 
+// ExtractTask tracks an async extract operation
+type ExtractTask struct {
+	ID         string    `json:"id"`
+	ServerUUID string    `json:"server_uuid"`
+	Status     string    `json:"status"` // extracting, completed, failed
+	Progress   int       `json:"progress"`
+	Total      int       `json:"total"`
+	Error      string    `json:"error,omitempty"`
+	StartedAt  time.Time `json:"started_at"`
+}
+
 // DefaultHandler implements RequestHandler for file operations
 type DefaultHandler struct {
 	getServerPath     func(serverUUID string) (string, error)
@@ -221,6 +234,8 @@ type DefaultHandler struct {
 	onArchiveProgress func(serverUUID, taskID string, progress, total int, status string)
 	archiveTasks      map[string]*ArchiveTask
 	archiveTasksMu    sync.RWMutex
+	extractTasks      map[string]*ExtractTask
+	extractTasksMu    sync.RWMutex
 }
 
 // NewDefaultHandler creates a handler with the given server path resolver
@@ -228,6 +243,7 @@ func NewDefaultHandler(getServerPath func(serverUUID string) (string, error)) *D
 	return &DefaultHandler{
 		getServerPath: getServerPath,
 		archiveTasks:  make(map[string]*ArchiveTask),
+		extractTasks:  make(map[string]*ExtractTask),
 	}
 }
 
@@ -299,6 +315,10 @@ func (h *DefaultHandler) HandleSFTPRequest(req *Request) *Response {
 		return h.handleArchiveStatus(req)
 	case "archive_download":
 		return h.handleArchiveDownload(req)
+	case "extract_async":
+		return h.handleExtractAsync(req)
+	case "extract_status":
+		return h.handleExtractStatus(req)
 	case "map_tile":
 		return h.handleMapTile(req)
 	case "map_regions":
@@ -385,7 +405,7 @@ func (h *DefaultHandler) handleWrite(id, path string, data map[string]interface{
 
 	// Ensure parent directory exists
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0775); err != nil {
 		return &Response{ID: id, Success: false, Error: err.Error()}
 	}
 
@@ -422,7 +442,7 @@ func (h *DefaultHandler) handleRename(id, oldPath, newPath string) *Response {
 }
 
 func (h *DefaultHandler) handleMkdir(id, path string) *Response {
-	if err := os.MkdirAll(path, 0755); err != nil {
+	if err := os.MkdirAll(path, 0775); err != nil {
 		return &Response{ID: id, Success: false, Error: err.Error()}
 	}
 
@@ -1075,6 +1095,260 @@ func (h *DefaultHandler) handleArchiveDownload(req *Request) *Response {
 			"content":  base64.StdEncoding.EncodeToString(content),
 		},
 	}
+}
+
+// handleExtractAsync extracts a .zip or .rar archive asynchronously with progress tracking
+func (h *DefaultHandler) handleExtractAsync(req *Request) *Response {
+	basePath, err := h.getServerPath(req.ServerUUID)
+	if err != nil {
+		return &Response{ID: req.ID, Success: false, Error: err.Error()}
+	}
+
+	taskID, _ := req.Data["task_id"].(string)
+	if taskID == "" {
+		taskID = fmt.Sprintf("extract-%d", time.Now().UnixNano())
+	}
+
+	// Sanitize archive path
+	archivePath, err := h.sanitizePath(basePath, req.Path)
+	if err != nil {
+		return &Response{ID: req.ID, Success: false, Error: err.Error()}
+	}
+
+	// Check archive exists
+	if _, err := os.Stat(archivePath); err != nil {
+		return &Response{ID: req.ID, Success: false, Error: "archive not found"}
+	}
+
+	// Determine format from extension
+	lowerPath := strings.ToLower(archivePath)
+	var format string
+	if strings.HasSuffix(lowerPath, ".zip") {
+		format = "zip"
+	} else if strings.HasSuffix(lowerPath, ".rar") {
+		format = "rar"
+	} else {
+		return &Response{ID: req.ID, Success: false, Error: "unsupported archive format (must be .zip or .rar)"}
+	}
+
+	// Destination is the directory containing the archive
+	destDir := filepath.Dir(archivePath)
+
+	// Count total entries for progress
+	var totalFiles int
+	if format == "zip" {
+		r, err := zip.OpenReader(archivePath)
+		if err != nil {
+			return &Response{ID: req.ID, Success: false, Error: "failed to read archive: " + err.Error()}
+		}
+		totalFiles = len(r.File)
+		r.Close()
+	} else {
+		// For rar, estimate by listing with 7z
+		totalFiles = countRarEntries(archivePath)
+	}
+
+	// Create task
+	task := &ExtractTask{
+		ID:         taskID,
+		ServerUUID: req.ServerUUID,
+		Status:     "extracting",
+		Progress:   0,
+		Total:      totalFiles,
+		StartedAt:  time.Now(),
+	}
+
+	h.extractTasksMu.Lock()
+	h.extractTasks[taskID] = task
+	h.extractTasksMu.Unlock()
+
+	log.Printf("[Extract] Starting async %s extract: %s -> %s (task: %s, files: %d)", format, archivePath, destDir, taskID, totalFiles)
+
+	// Run extraction in background
+	go func() {
+		var extractErr error
+
+		progressCallback := func(current int) {
+			h.extractTasksMu.Lock()
+			task.Progress = current
+			h.extractTasksMu.Unlock()
+		}
+
+		if format == "zip" {
+			extractErr = h.extractZipWithProgress(archivePath, destDir, basePath, progressCallback)
+		} else {
+			extractErr = h.extractRarWithProgress(archivePath, destDir, basePath, progressCallback)
+		}
+
+		h.extractTasksMu.Lock()
+		if extractErr != nil {
+			task.Status = "failed"
+			task.Error = extractErr.Error()
+			log.Printf("[Extract] Failed: %s - %v", taskID, extractErr)
+		} else {
+			task.Status = "completed"
+			task.Progress = totalFiles
+			log.Printf("[Extract] Completed: %s", taskID)
+		}
+		h.extractTasksMu.Unlock()
+	}()
+
+	// Return immediately with task ID
+	return &Response{
+		ID:      req.ID,
+		Success: true,
+		Data: map[string]interface{}{
+			"task_id": taskID,
+			"status":  "extracting",
+			"total":   totalFiles,
+		},
+	}
+}
+
+// handleExtractStatus returns the status of an extract task
+func (h *DefaultHandler) handleExtractStatus(req *Request) *Response {
+	taskID, _ := req.Data["task_id"].(string)
+	if taskID == "" {
+		return &Response{ID: req.ID, Success: false, Error: "task_id is required"}
+	}
+
+	h.extractTasksMu.RLock()
+	task, exists := h.extractTasks[taskID]
+	h.extractTasksMu.RUnlock()
+
+	if !exists {
+		return &Response{ID: req.ID, Success: false, Error: "task not found"}
+	}
+
+	// Clean up completed/failed tasks after reporting
+	if task.Status == "completed" || task.Status == "failed" {
+		h.extractTasksMu.Lock()
+		delete(h.extractTasks, taskID)
+		h.extractTasksMu.Unlock()
+	}
+
+	return &Response{
+		ID:      req.ID,
+		Success: true,
+		Data: map[string]interface{}{
+			"task_id":  task.ID,
+			"status":   task.Status,
+			"progress": task.Progress,
+			"total":    task.Total,
+			"error":    task.Error,
+		},
+	}
+}
+
+// extractZipWithProgress extracts a zip archive with progress tracking
+func (h *DefaultHandler) extractZipWithProgress(archivePath, destDir, basePath string, onProgress func(int)) error {
+	r, err := zip.OpenReader(archivePath)
+	if err != nil {
+		return fmt.Errorf("failed to open zip: %w", err)
+	}
+	defer r.Close()
+
+	count := 0
+	for _, f := range r.File {
+		// Sanitize the extracted path to prevent zip-slip attacks
+		targetPath := filepath.Join(destDir, f.Name)
+		targetPath = filepath.Clean(targetPath)
+
+		// Ensure the target stays within the server directory
+		if !strings.HasPrefix(targetPath, basePath) {
+			log.Printf("[Extract] Skipping unsafe path: %s", f.Name)
+			count++
+			onProgress(count)
+			continue
+		}
+
+		if f.FileInfo().IsDir() {
+			os.MkdirAll(targetPath, 0775)
+			count++
+			onProgress(count)
+			continue
+		}
+
+		// Ensure parent directory exists
+		os.MkdirAll(filepath.Dir(targetPath), 0775)
+
+		// Extract file
+		rc, err := f.Open()
+		if err != nil {
+			return fmt.Errorf("failed to open entry %s: %w", f.Name, err)
+		}
+
+		outFile, err := os.Create(targetPath)
+		if err != nil {
+			rc.Close()
+			return fmt.Errorf("failed to create %s: %w", targetPath, err)
+		}
+
+		_, err = io.Copy(outFile, rc)
+		outFile.Close()
+		rc.Close()
+
+		if err != nil {
+			return fmt.Errorf("failed to extract %s: %w", f.Name, err)
+		}
+
+		count++
+		onProgress(count)
+	}
+
+	return nil
+}
+
+// extractRarWithProgress extracts a rar archive using 7z with progress tracking
+func (h *DefaultHandler) extractRarWithProgress(archivePath, destDir, basePath string, onProgress func(int)) error {
+	// Verify 7z is available
+	if _, err := exec.LookPath("7z"); err != nil {
+		return fmt.Errorf("7z not found — install p7zip-full to extract .rar files")
+	}
+
+	// Extract using 7z with overwrite
+	cmd := exec.Command("7z", "x", "-y", "-o"+destDir, archivePath)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("7z extraction failed: %s", string(output))
+	}
+
+	// Count extracted files for final progress
+	total := countRarEntries(archivePath)
+	onProgress(total)
+
+	// Verify no files escaped the basePath (safety check)
+	// 7z extracts relative to destDir, so this should be safe,
+	// but log a warning if destDir is outside basePath
+	if !strings.HasPrefix(destDir, basePath) {
+		log.Printf("[Extract] WARNING: destDir %s is outside basePath %s", destDir, basePath)
+	}
+
+	return nil
+}
+
+// countRarEntries counts files in a rar archive using 7z
+func countRarEntries(archivePath string) int {
+	cmd := exec.Command("7z", "l", archivePath)
+	output, err := cmd.Output()
+	if err != nil {
+		return 0
+	}
+
+	// Count lines that represent files in 7z listing
+	count := 0
+	lines := strings.Split(string(output), "\n")
+	inListing := false
+	for _, line := range lines {
+		if strings.HasPrefix(line, "---") {
+			inListing = !inListing
+			continue
+		}
+		if inListing && strings.TrimSpace(line) != "" {
+			count++
+		}
+	}
+	return count
 }
 
 // createZipArchiveWithProgress creates a zip archive with progress callback

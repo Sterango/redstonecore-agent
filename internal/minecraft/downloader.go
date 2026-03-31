@@ -186,7 +186,7 @@ func (d *Downloader) downloadVanilla(version string, destDir string) (string, er
 // downloadFile downloads a file from URL to destination path
 func (d *Downloader) downloadFile(url, destPath string) error {
 	// Create destination directory if needed
-	if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(destPath), 0775); err != nil {
 		return fmt.Errorf("failed to create directory: %w", err)
 	}
 
@@ -828,7 +828,7 @@ func (d *Downloader) downloadWaterfall(mcVersion string, destDir string) (string
 func (d *Downloader) downloadSpigot(version string, destDir string) (string, error) {
 	// Create a build directory in cache
 	buildDir := filepath.Join(d.cacheDir, "spigot-build")
-	if err := os.MkdirAll(buildDir, 0755); err != nil {
+	if err := os.MkdirAll(buildDir, 0775); err != nil {
 		return "", fmt.Errorf("failed to create build directory: %w", err)
 	}
 
@@ -901,7 +901,7 @@ func (d *Downloader) copyFile(src, dst string) error {
 	}
 	defer srcFile.Close()
 
-	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(dst), 0775); err != nil {
 		return err
 	}
 

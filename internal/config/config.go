@@ -74,7 +74,7 @@ func Load(configPath string) (*Config, error) {
 	}
 
 	// Ensure directories exist
-	if err := os.MkdirAll(cfg.DataDir, 0755); err != nil {
+	if err := os.MkdirAll(cfg.DataDir, 0775); err != nil {
 		return nil, fmt.Errorf("failed to create data directory: %w", err)
 	}
 

@@ -60,7 +60,7 @@ var worldDirs = []string{
 // Create creates a new backup
 func Create(cfg Config) (*Result, error) {
 	// Ensure backup directory exists
-	if err := os.MkdirAll(cfg.BackupDir, 0755); err != nil {
+	if err := os.MkdirAll(cfg.BackupDir, 0775); err != nil {
 		return nil, fmt.Errorf("failed to create backup directory: %w", err)
 	}
 

@@ -34,7 +34,7 @@ func (c *TileCache) Get(serverUUID, dimension string, x, z int) ([]byte, bool) {
 func (c *TileCache) Put(serverUUID, dimension string, x, z int, data []byte) error {
 	path := c.tilePath(serverUUID, dimension, x, z)
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0775); err != nil {
 		return err
 	}
 	return os.WriteFile(path, data, 0644)

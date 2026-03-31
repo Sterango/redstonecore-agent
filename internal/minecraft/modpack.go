@@ -215,12 +215,12 @@ func (m *ModpackInstaller) extractModpack(zipPath, destDir string) (*ModpackInfo
 		destPath := filepath.Join(destDir, relPath)
 
 		if file.FileInfo().IsDir() {
-			os.MkdirAll(destPath, 0755)
+			os.MkdirAll(destPath, 0775)
 			continue
 		}
 
 		// Create parent directories
-		if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(destPath), 0775); err != nil {
 			return nil, fmt.Errorf("failed to create directory: %w", err)
 		}
 
@@ -298,7 +298,7 @@ func (m *ModpackInstaller) downloadCurseForgeMods(manifest *CurseForgeManifest, 
 
 	// Create mods directory
 	modsDir := filepath.Join(destDir, "mods")
-	if err := os.MkdirAll(modsDir, 0755); err != nil {
+	if err := os.MkdirAll(modsDir, 0775); err != nil {
 		return fmt.Errorf("failed to create mods directory: %w", err)
 	}
 
@@ -374,7 +374,7 @@ func (m *ModpackInstaller) getCurseForgeFileInfo(projectID, fileID int) (*CurseF
 // downloadFile downloads a file from URL to destination
 func (m *ModpackInstaller) downloadFile(url, destPath string) error {
 	// Create destination directory
-	if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(destPath), 0775); err != nil {
 		return fmt.Errorf("failed to create directory: %w", err)
 	}
 
@@ -461,14 +461,14 @@ func (m *ModpackInstaller) InstallServerPack(url, filename, destDir string) erro
 		// Skip directories
 		if file.FileInfo().IsDir() {
 			destPath := filepath.Join(destDir, file.Name)
-			os.MkdirAll(destPath, 0755)
+			os.MkdirAll(destPath, 0775)
 			continue
 		}
 
 		destPath := filepath.Join(destDir, file.Name)
 
 		// Create parent directories
-		if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(destPath), 0775); err != nil {
 			log.Printf("Warning: Failed to create directory for %s: %v", file.Name, err)
 			continue
 		}

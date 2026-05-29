@@ -138,6 +138,14 @@ func parseRecipeMap(m map[string]interface{}, presentMods map[string]bool) (*Rec
 	if len(rec.Inputs) == 0 && len(rec.Key) == 0 && len(rec.Outputs) == 0 {
 		return nil, false
 	}
+	// Never emit nil slices — they marshal to JSON null, which breaks the UI's
+	// .map() calls. Coerce to empty arrays.
+	if rec.Inputs == nil {
+		rec.Inputs = []Ingredient{}
+	}
+	if rec.Outputs == nil {
+		rec.Outputs = []Ingredient{}
+	}
 	return rec, true
 }
 

@@ -41,6 +41,12 @@ func ResetTextureCache() {
 	textureColors = nil
 }
 
+// FindJars returns all mod/server/library JARs under serverDir. Exported so
+// sibling packages (e.g. moddata) can reuse jar enumeration without duplicating it.
+func FindJars(serverDir string) []string {
+	return findJars(serverDir)
+}
+
 func findJars(serverDir string) []string {
 	var jars []string
 

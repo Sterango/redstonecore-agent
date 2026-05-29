@@ -19,6 +19,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/sterango/redstonecore-agent/internal/backup"
 	"github.com/sterango/redstonecore-agent/internal/maprender"
+	"github.com/sterango/redstonecore-agent/internal/moddata"
 )
 
 // Client handles the SFTP relay WebSocket connection
@@ -325,6 +326,18 @@ func (h *DefaultHandler) HandleSFTPRequest(req *Request) *Response {
 		return h.handleMapRegions(req)
 	case "map_invalidate":
 		return h.handleMapInvalidate(req)
+	case "mod_lang":
+		return h.handleModLang(req)
+	case "mod_invalidate":
+		return h.handleModInvalidate(req)
+	case "mod_index_build":
+		return h.handleModData(req, moddata.HandleModIndexBuild)
+	case "mod_items_search":
+		return h.handleModData(req, moddata.HandleModItemsSearch)
+	case "mod_item_recipes":
+		return h.handleModData(req, moddata.HandleModItemRecipes)
+	case "mod_icon":
+		return h.handleModData(req, moddata.HandleModIcon)
 	default:
 		return &Response{ID: req.ID, Success: false, Error: "unknown operation"}
 	}
@@ -1593,6 +1606,61 @@ func (h *DefaultHandler) handleMapRegions(req *Request) *Response {
 // handleMapInvalidate clears the tile cache for a server
 func (h *DefaultHandler) handleMapInvalidate(req *Request) *Response {
 	result := maprender.HandleMapInvalidate(req.ServerUUID, h.dataDir)
+	if errStr, ok := result["error"].(string); ok && errStr != "" {
+		return &Response{ID: req.ID, Success: false, Error: errStr}
+	}
+
+	return &Response{ID: req.ID, Success: true, Data: result}
+}
+
+// handleModLang extracts a mod's language strings (labels, tooltips, GUI text)
+// from the server's installed jars.
+func (h *DefaultHandler) handleModLang(req *Request) *Response {
+	basePath, err := h.getServerPath(req.ServerUUID)
+	if err != nil {
+		return &Response{ID: req.ID, Success: false, Error: err.Error()}
+	}
+
+	params := req.Data
+	if params == nil {
+		params = map[string]interface{}{}
+	}
+
+	result := moddata.HandleModLang(basePath, req.ServerUUID, h.dataDir, params)
+	if errStr, ok := result["error"].(string); ok && errStr != "" {
+		return &Response{ID: req.ID, Success: false, Error: errStr}
+	}
+
+	return &Response{ID: req.ID, Success: true, Data: result}
+}
+
+// handleModInvalidate clears extracted mod-data caches for a server.
+func (h *DefaultHandler) handleModInvalidate(req *Request) *Response {
+	result := moddata.HandleModInvalidate(req.ServerUUID, h.dataDir)
+	if errStr, ok := result["error"].(string); ok && errStr != "" {
+		return &Response{ID: req.ID, Success: false, Error: errStr}
+	}
+
+	return &Response{ID: req.ID, Success: true, Data: result}
+}
+
+// handleModData dispatches the (serverDir, serverUUID, dataDir, params) family
+// of moddata handlers (index build, item search, recipe lookup, icon).
+func (h *DefaultHandler) handleModData(
+	req *Request,
+	fn func(serverDir, serverUUID, dataDir string, params map[string]interface{}) map[string]interface{},
+) *Response {
+	basePath, err := h.getServerPath(req.ServerUUID)
+	if err != nil {
+		return &Response{ID: req.ID, Success: false, Error: err.Error()}
+	}
+
+	params := req.Data
+	if params == nil {
+		params = map[string]interface{}{}
+	}
+
+	result := fn(basePath, req.ServerUUID, h.dataDir, params)
 	if errStr, ok := result["error"].(string); ok && errStr != "" {
 		return &Response{ID: req.ID, Success: false, Error: errStr}
 	}

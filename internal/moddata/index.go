@@ -15,7 +15,13 @@ import (
 )
 
 // Index is the per-server item + recipe catalog, persisted as index.json.
+// indexSchema is bumped whenever the cached index format changes, so stale
+// on-disk caches from an older agent are ignored (the mods signature alone
+// doesn't change when only the agent code changes).
+const indexSchema = 2
+
 type Index struct {
+	Schema    int                 `json:"schema"`
 	Items     []Item              `json:"items"`
 	Recipes   []Recipe            `json:"recipes"`
 	ByOutput  map[string][]int    `json:"byOutput"` // item id -> recipe indices producing it
@@ -61,7 +67,7 @@ func getIndex(serverDir, serverUUID, dataDir string) (*cachedIndex, error) {
 	if sig != "" && readSig(dir) == sig {
 		if data, err := os.ReadFile(indexJSONPath(dir)); err == nil {
 			var idx Index
-			if json.Unmarshal(data, &idx) == nil {
+			if json.Unmarshal(data, &idx) == nil && idx.Schema == indexSchema {
 				return storeMem(serverUUID, &idx), nil
 			}
 		}
@@ -82,6 +88,7 @@ func rebuild(serverDir, serverUUID, dataDir string) (*cachedIndex, error) {
 	}
 
 	idx := buildIndex(serverDir, iconsDir(dir))
+	idx.Schema = indexSchema
 	idx.Signature = modsSignature(serverDir)
 	idx.BuiltAt = time.Now().Unix()
 

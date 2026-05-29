@@ -16,12 +16,13 @@ import (
 
 // Index is the per-server item + recipe catalog, persisted as index.json.
 type Index struct {
-	Items     []Item           `json:"items"`
-	Recipes   []Recipe         `json:"recipes"`
-	ByOutput  map[string][]int `json:"byOutput"` // item id -> recipe indices producing it
-	ByInput   map[string][]int `json:"byInput"`  // item id -> recipe indices consuming it
-	Signature string           `json:"signature"`
-	BuiltAt   int64            `json:"builtAt"`
+	Items     []Item              `json:"items"`
+	Recipes   []Recipe            `json:"recipes"`
+	ByOutput  map[string][]int    `json:"byOutput"` // item id -> recipe indices producing it
+	ByInput   map[string][]int    `json:"byInput"`  // item id -> recipe indices consuming it
+	Tags      map[string][]string `json:"tags"`     // tag id -> representative member item ids (recipe-referenced only)
+	Signature string              `json:"signature"`
+	BuiltAt   int64               `json:"builtAt"`
 }
 
 type recipeRaw struct {
@@ -112,6 +113,7 @@ func buildIndex(serverDir, icons string) *Index {
 	textures := map[string][]byte{}
 	lang := map[string]string{}
 	presentMods := map[string]bool{}
+	rawTags := map[string][]string{}
 	var recipeRaws []recipeRaw
 
 	for _, jarPath := range jars {
@@ -157,6 +159,12 @@ func buildIndex(serverDir, icons string) *Index {
 				if ns := dataNS(name); ns != "" {
 					if b := readEntry(f); b != nil {
 						recipeRaws = append(recipeRaws, recipeRaw{ns, b})
+					}
+				}
+			case strings.HasPrefix(name, "data/") && strings.Contains(name, "/tags/item") && strings.HasSuffix(name, ".json"):
+				if ns, path := tagParts(name); ns != "" {
+					if b := readEntry(f); b != nil {
+						mergeTag(rawTags, ns+":"+path, b)
 					}
 				}
 			}
@@ -214,7 +222,79 @@ func buildIndex(serverDir, icons string) *Index {
 		}
 	}
 
-	return &Index{Items: items, Recipes: recipes, ByOutput: byOutput, ByInput: byInput}
+	// Resolve only the tags actually referenced by recipes, to representative
+	// member item ids (so the UI can show/cycle icons instead of raw tag names).
+	tags := map[string][]string{}
+	addTag := func(tag string) {
+		if tag == "" || tags[tag] != nil {
+			return
+		}
+		var items []string
+		resolveTag(rawTags, tag, 24, map[string]bool{}, &items)
+		if len(items) > 0 {
+			tags[tag] = items
+		}
+	}
+	for _, r := range recipes {
+		for _, in := range r.Inputs {
+			addTag(in.Tag)
+		}
+		for _, k := range r.Key {
+			addTag(k.Tag)
+		}
+	}
+
+	return &Index{Items: items, Recipes: recipes, ByOutput: byOutput, ByInput: byInput, Tags: tags}
+}
+
+// tagParts splits "data/<ns>/tags/item(s)/<path>.json" into ns and tag path.
+func tagParts(name string) (ns, path string) {
+	parts := strings.SplitN(name, "/", 5)
+	if len(parts) < 5 || parts[0] != "data" || parts[2] != "tags" {
+		return "", ""
+	}
+	if parts[3] != "item" && parts[3] != "items" {
+		return "", ""
+	}
+	return parts[1], strings.TrimSuffix(parts[4], ".json")
+}
+
+// mergeTag appends a tag file's values (item ids, {id} objects, or #tag refs).
+func mergeTag(tags map[string][]string, id string, data []byte) {
+	var t struct {
+		Values []interface{} `json:"values"`
+	}
+	if json.Unmarshal(data, &t) != nil {
+		return
+	}
+	for _, v := range t.Values {
+		switch x := v.(type) {
+		case string:
+			tags[id] = append(tags[id], x)
+		case map[string]interface{}:
+			if s, ok := x["id"].(string); ok {
+				tags[id] = append(tags[id], s)
+			}
+		}
+	}
+}
+
+// resolveTag flattens a tag to member item ids, expanding nested #tag refs.
+func resolveTag(rawTags map[string][]string, tag string, limit int, seen map[string]bool, out *[]string) {
+	if seen[tag] || len(*out) >= limit {
+		return
+	}
+	seen[tag] = true
+	for _, v := range rawTags[tag] {
+		if len(*out) >= limit {
+			return
+		}
+		if strings.HasPrefix(v, "#") {
+			resolveTag(rawTags, strings.TrimPrefix(v, "#"), limit, seen, out)
+		} else {
+			*out = append(*out, v)
+		}
+	}
 }
 
 // scanKubeJSRecipes reads instance-local datapack recipe JSON under kubejs/data.
@@ -324,6 +404,11 @@ func (ci *cachedIndex) referencedMeta(sets ...[]Recipe) (map[string]string, map[
 			names[id] = prettify(path)
 		}
 	}
+	addTagMembers := func(tag string) {
+		for _, id := range ci.idx.Tags[tag] {
+			add(id)
+		}
+	}
 	for _, set := range sets {
 		for _, r := range set {
 			for _, o := range r.Outputs {
@@ -331,13 +416,40 @@ func (ci *cachedIndex) referencedMeta(sets ...[]Recipe) (map[string]string, map[
 			}
 			for _, in := range r.Inputs {
 				add(in.Item)
+				addTagMembers(in.Tag)
 			}
 			for _, k := range r.Key {
 				add(k.Item)
+				addTagMembers(k.Tag)
 			}
 		}
 	}
 	return names, icons
+}
+
+// recipeTags returns the resolved tag->items map limited to tags referenced by
+// the given recipe sets.
+func (ci *cachedIndex) recipeTags(sets ...[]Recipe) map[string][]string {
+	out := map[string][]string{}
+	take := func(tag string) {
+		if tag == "" || out[tag] != nil {
+			return
+		}
+		if members := ci.idx.Tags[tag]; len(members) > 0 {
+			out[tag] = members
+		}
+	}
+	for _, set := range sets {
+		for _, r := range set {
+			for _, in := range r.Inputs {
+				take(in.Tag)
+			}
+			for _, k := range r.Key {
+				take(k.Tag)
+			}
+		}
+	}
+	return out
 }
 
 func readEntry(f *zip.File) []byte {

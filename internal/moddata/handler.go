@@ -99,11 +99,13 @@ func HandleModItemRecipes(serverDir, serverUUID, dataDir string, params map[stri
 	}
 	makes, uses := ci.recipesFor(id)
 	names, icons := ci.referencedMeta(makes, uses)
+	tags := ci.recipeTags(makes, uses)
 	return map[string]interface{}{
 		"makes": makes,
 		"uses":  uses,
 		"names": names,
 		"icons": icons,
+		"tags":  tags,
 	}
 }
 

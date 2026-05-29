@@ -98,6 +98,14 @@ func TestModIndexSmoke(t *testing.T) {
 		t.Errorf("expected a mekanism:metallurgic_infusing recipe for enriched_iron")
 	}
 
+	// The infusing recipe consumes tag c:ingots/iron — it should resolve to items.
+	tagsMap, _ := rec["tags"].(map[string][]string)
+	if items := tagsMap["c:ingots/iron"]; len(items) == 0 {
+		t.Errorf("expected c:ingots/iron tag to resolve to member items, got none (tags=%d)", len(tagsMap))
+	} else {
+		t.Logf("c:ingots/iron resolves to %d items, e.g. %s", len(items), items[0])
+	}
+
 	// Icon should be retrievable as base64 (enriched_iron is a flat item).
 	icon := HandleModIcon(serverDir, "test-uuid", dataDir, map[string]interface{}{"id": "mekanism:enriched_iron"})
 	if content, _ := icon["content"].(string); content == "" {

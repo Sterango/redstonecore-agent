@@ -22,8 +22,11 @@ func HandleModModel(serverDir, serverUUID, dataDir string, params map[string]int
 	cachePath := filepath.Join(indexCacheDir(dataDir, serverUUID), "models3d", safeKey(id)+".json")
 	if data, err := os.ReadFile(cachePath); err == nil {
 		var bundle map[string]interface{}
+		// Honor the bundle format version so stale caches rebuild after a change.
 		if json.Unmarshal(data, &bundle) == nil {
-			return bundle
+			if v, _ := bundle["v"].(float64); int(v) == bundleSchema {
+				return bundle
+			}
 		}
 	}
 
@@ -126,7 +129,7 @@ func buildBundle(js *jarSet, kind string, fm *flatModel) map[string]interface{} 
 		}
 	}
 
-	b := map[string]interface{}{"textures": resolved, "textureData": textureData}
+	b := map[string]interface{}{"v": bundleSchema, "textures": resolved, "textureData": textureData}
 	if fm.Display != nil {
 		if g, ok := fm.Display["gui"]; ok {
 			b["display"] = g
@@ -146,10 +149,51 @@ func buildBundle(js *jarSet, kind string, fm *flatModel) map[string]interface{} 
 		b["kind"] = "obj"
 		b["obj"] = string(obj)
 		b["flipV"] = fm.FlipV
+		// OBJ materials map (usemtl name -> texId) parsed from the .mtl, since
+		// NeoForge maps each material's map_Kd to a #texture variable.
+		b["materials"] = parseMtl(js, fm.ModelRef, string(obj), resolved)
 		return b
 	}
 	return nil
 }
+
+// parseMtl reads the .mtl referenced by an obj and maps each material name to a
+// resolved texId (map_Kd "#var" -> resolved[var]).
+func parseMtl(js *jarSet, objRef, objText string, resolved map[string]string) map[string]string {
+	mats := map[string]string{}
+	var mtlName string
+	for _, line := range strings.Split(objText, "\n") {
+		if strings.HasPrefix(line, "mtllib ") {
+			mtlName = strings.TrimSpace(line[len("mtllib "):])
+			break
+		}
+	}
+	if mtlName == "" {
+		return mats
+	}
+	objPath := objRefToPath(objRef)
+	dir := objPath[:strings.LastIndex(objPath, "/")+1]
+	data := js.read(dir + mtlName)
+	if data == nil {
+		return mats
+	}
+	var cur string
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(line, "newmtl "):
+			cur = strings.TrimSpace(line[len("newmtl "):])
+		case strings.HasPrefix(line, "map_Kd ") && cur != "":
+			ref := strings.TrimPrefix(strings.TrimSpace(line[len("map_Kd "):]), "#")
+			if texId, ok := resolved[ref]; ok {
+				mats[cur] = texId
+			}
+		}
+	}
+	return mats
+}
+
+const bundleSchema = 2
 
 // resolveVar follows "#var" texture references through the textures map.
 func resolveVar(tex map[string]string, v string, depth int) string {

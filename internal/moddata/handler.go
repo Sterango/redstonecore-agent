@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 )
 
 // HandleModLang returns a mod's filtered language map (labels, tooltips, GUI
@@ -63,10 +64,27 @@ func HandleModIndexBuild(serverDir, serverUUID, dataDir string, params map[strin
 	if err != nil {
 		return map[string]interface{}{"error": err.Error()}
 	}
+
+	// Per-mod item counts, for the item grid's mod tabs (sorted most items first).
+	counts := map[string]int{}
+	for _, it := range ci.idx.Items {
+		counts[it.Mod]++
+	}
+	type modCount struct {
+		Mod   string `json:"mod"`
+		Count int    `json:"count"`
+	}
+	mods := make([]modCount, 0, len(counts))
+	for m, c := range counts {
+		mods = append(mods, modCount{m, c})
+	}
+	sort.Slice(mods, func(i, j int) bool { return mods[i].Count > mods[j].Count })
+
 	return map[string]interface{}{
 		"itemCount":   len(ci.idx.Items),
 		"recipeCount": len(ci.idx.Recipes),
 		"builtAt":     ci.idx.BuiltAt,
+		"mods":        mods,
 	}
 }
 

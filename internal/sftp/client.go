@@ -338,6 +338,8 @@ func (h *DefaultHandler) HandleSFTPRequest(req *Request) *Response {
 		return h.handleModData(req, moddata.HandleModItemRecipes)
 	case "mod_icon":
 		return h.handleModData(req, moddata.HandleModIcon)
+	case "mod_model":
+		return h.handleModData(req, moddata.HandleModModel)
 	default:
 		return &Response{ID: req.ID, Success: false, Error: "unknown operation"}
 	}

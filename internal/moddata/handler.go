@@ -116,14 +116,15 @@ func HandleModItemRecipes(serverDir, serverUUID, dataDir string, params map[stri
 		return map[string]interface{}{"error": "id is required"}
 	}
 	makes, uses := ci.recipesFor(id)
-	names, icons := ci.referencedMeta(makes, uses)
+	names, icons, models := ci.referencedMeta(makes, uses)
 	tags := ci.recipeTags(makes, uses)
 	return map[string]interface{}{
-		"makes": makes,
-		"uses":  uses,
-		"names": names,
-		"icons": icons,
-		"tags":  tags,
+		"makes":  makes,
+		"uses":   uses,
+		"names":  names,
+		"icons":  icons,
+		"models": models,
+		"tags":   tags,
 	}
 }
 

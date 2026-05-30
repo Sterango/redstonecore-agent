@@ -18,15 +18,16 @@ import (
 // indexSchema is bumped whenever the cached index format changes, so stale
 // on-disk caches from an older agent are ignored (the mods signature alone
 // doesn't change when only the agent code changes).
-const indexSchema = 5
+const indexSchema = 6
 
 type Index struct {
 	Schema    int                 `json:"schema"`
 	Items     []Item              `json:"items"`
 	Recipes   []Recipe            `json:"recipes"`
-	ByOutput  map[string][]int    `json:"byOutput"` // item id -> recipe indices producing it
-	ByInput   map[string][]int    `json:"byInput"`  // item id -> recipe indices consuming it
-	Tags      map[string][]string `json:"tags"`     // tag id -> representative member item ids (recipe-referenced only)
+	ByOutput  map[string][]int    `json:"byOutput"`  // item id -> recipe indices producing it
+	ByInput   map[string][]int    `json:"byInput"`   // item id -> recipe indices consuming it
+	Tags      map[string][]string `json:"tags"`      // tag id -> representative member item ids (recipe-referenced only)
+	NsToJars  map[string][]string `json:"nsToJars"`  // namespace -> jars providing assets/<ns>/ (for on-demand model serving)
 	Signature string              `json:"signature"`
 	BuiltAt   int64               `json:"builtAt"`
 }
@@ -128,6 +129,7 @@ func buildIndex(serverDir, icons string, extraJars []string) *Index {
 	lang := map[string]string{}
 	presentMods := map[string]bool{}
 	rawTags := map[string][]string{}
+	nsJars := map[string]map[string]bool{}
 	var recipeRaws []recipeRaw
 
 	for _, jarPath := range jars {
@@ -137,6 +139,17 @@ func buildIndex(serverDir, icons string, extraJars []string) *Index {
 		}
 		for _, f := range zr.File {
 			name := f.Name
+			// Record which jars provide each asset namespace (for on-demand
+			// model/texture serving).
+			if strings.HasPrefix(name, "assets/") {
+				if i := strings.IndexByte(name[len("assets/"):], '/'); i > 0 {
+					ns := name[len("assets/") : len("assets/")+i]
+					if nsJars[ns] == nil {
+						nsJars[ns] = map[string]bool{}
+					}
+					nsJars[ns][jarPath] = true
+				}
+			}
 			switch {
 			case strings.HasPrefix(name, "assets/") && strings.HasSuffix(name, "/lang/en_us.json"):
 				mergeLangEntry(f, lang)
@@ -193,6 +206,9 @@ func buildIndex(serverDir, icons string, extraJars []string) *Index {
 			if os.WriteFile(filepath.Join(icons, iconFile(id)), png, 0644) == nil {
 				it.HasIcon = true
 			}
+		}
+		if kind := classifyModel(model, blockModels, itemModels, 8); kind != "flat" {
+			it.Render = kind
 		}
 		items = append(items, it)
 	}
@@ -251,7 +267,14 @@ func buildIndex(serverDir, icons string, extraJars []string) *Index {
 		}
 	}
 
-	return &Index{Items: items, Recipes: recipes, ByOutput: byOutput, ByInput: byInput, Tags: tags}
+	nsToJars := make(map[string][]string, len(nsJars))
+	for ns, set := range nsJars {
+		for jp := range set {
+			nsToJars[ns] = append(nsToJars[ns], jp)
+		}
+	}
+
+	return &Index{Items: items, Recipes: recipes, ByOutput: byOutput, ByInput: byInput, Tags: tags, NsToJars: nsToJars}
 }
 
 // tagParts splits "data/<ns>/tags/item(s)/<path>.json" into ns and tag path.
@@ -405,12 +428,13 @@ func (ci *cachedIndex) recipesFor(id string) (makes, uses []Recipe) {
 	return makes, uses
 }
 
-// referencedMeta returns name + hasIcon lookups for every item id referenced by
-// the given recipe sets, so the frontend can render ingredients without a
-// separate round-trip per id.
-func (ci *cachedIndex) referencedMeta(sets ...[]Recipe) (map[string]string, map[string]bool) {
+// referencedMeta returns name + hasIcon + render-kind lookups for every item id
+// referenced by the given recipe sets, so the frontend can render ingredients
+// (3D models included) without a separate round-trip per id.
+func (ci *cachedIndex) referencedMeta(sets ...[]Recipe) (map[string]string, map[string]bool, map[string]bool) {
 	names := map[string]string{}
 	icons := map[string]bool{}
+	models := map[string]bool{}
 	add := func(id string) {
 		if id == "" {
 			return
@@ -421,6 +445,9 @@ func (ci *cachedIndex) referencedMeta(sets ...[]Recipe) (map[string]string, map[
 		if it, ok := ci.byID[id]; ok {
 			names[id] = it.Name
 			icons[id] = it.HasIcon
+			if it.Render != "" {
+				models[id] = true
+			}
 		} else {
 			_, path := splitID(id)
 			names[id] = prettify(path)
@@ -446,7 +473,7 @@ func (ci *cachedIndex) referencedMeta(sets ...[]Recipe) (map[string]string, map[
 			}
 		}
 	}
-	return names, icons
+	return names, icons, models
 }
 
 // recipeTags returns the resolved tag->items map limited to tags referenced by

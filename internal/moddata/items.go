@@ -22,6 +22,51 @@ type Item struct {
 	Name    string `json:"name"`    // display name from lang, or prettified id
 	Mod     string `json:"mod"`     // namespace
 	HasIcon bool   `json:"hasIcon"`
+	Render  string `json:"render,omitempty"` // "" / "flat" = 2D icon, "elements" / "obj" = 3D model
+}
+
+// classifyModel walks an item model's parent chain to decide how it should be
+// drawn: a flat sprite ("flat"), a JSON element model ("elements"), or an OBJ
+// model ("obj"). Block items inherit elements from minecraft:block/block.
+func classifyModel(model []byte, blockModels, itemModels map[string][]byte, depth int) string {
+	var m struct {
+		Parent   string            `json:"parent"`
+		Loader   string            `json:"loader"`
+		Elements []json.RawMessage `json:"elements"`
+	}
+	if json.Unmarshal(model, &m) != nil {
+		return "flat"
+	}
+	if strings.Contains(m.Loader, "obj") {
+		return "obj"
+	}
+	if len(m.Elements) > 0 {
+		return "elements"
+	}
+	if depth <= 0 || m.Parent == "" {
+		return "flat"
+	}
+	// Generated/builtin item models are flat sprites.
+	if strings.Contains(m.Parent, "item/generated") || strings.Contains(m.Parent, "builtin/") {
+		return "flat"
+	}
+	if bm, ok := blockModelFor(m.Parent, blockModels); ok {
+		return classifyModel(bm, blockModels, itemModels, depth-1)
+	}
+	if im, ok := itemModelFor(m.Parent, itemModels); ok {
+		return classifyModel(im, blockModels, itemModels, depth-1)
+	}
+	return "flat"
+}
+
+// itemModelFor resolves a "ns:item/<path>" parent to its stored item model.
+func itemModelFor(parent string, itemModels map[string][]byte) ([]byte, bool) {
+	if !strings.Contains(parent, "item/") {
+		return nil, false
+	}
+	ns, path := splitID(parent)
+	im, ok := itemModels[ns+":"+strings.TrimPrefix(path, "item/")]
+	return im, ok
 }
 
 func splitID(id string) (ns, path string) {

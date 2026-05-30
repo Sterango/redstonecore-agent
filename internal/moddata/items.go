@@ -2,8 +2,18 @@ package moddata
 
 import (
 	"encoding/json"
+	"regexp"
 	"strings"
 )
+
+// Matches printf-style placeholders (%s, %d, %1$s, %2$d) and Minecraft § codes,
+// which appear in names that the game fills in at runtime (e.g. tier prefixes).
+var formatPlaceholderRe = regexp.MustCompile(`%(\d+\$)?[sd]|§.`)
+
+func cleanName(s string) string {
+	s = formatPlaceholderRe.ReplaceAllString(s, "")
+	return strings.Join(strings.Fields(s), " ")
+}
 
 // Item is a single registry item with its display name and whether an icon was
 // resolved at build time.
@@ -38,10 +48,10 @@ func prettify(s string) string {
 func displayName(id string, lang map[string]string) string {
 	ns, path := splitID(id)
 	if v, ok := lang["item."+ns+"."+path]; ok {
-		return v
+		return cleanName(v)
 	}
 	if v, ok := lang["block."+ns+"."+path]; ok {
-		return v
+		return cleanName(v)
 	}
 	return prettify(path)
 }
@@ -69,6 +79,61 @@ func resolveIcon(model []byte, blockModels, textures map[string][]byte, ns, path
 	for _, cand := range []string{ns + ":item/" + path, ns + ":block/" + path} {
 		if png, ok := textures[cand]; ok {
 			return png
+		}
+	}
+	// Custom-loader models (e.g. Sophisticated Storage barrels) nest textures
+	// under non-standard keys like model_parts.*.textures.*. Deep-scan the model
+	// (and its block-model parents) for any string that's a real texture.
+	if png := deepScanTexture(model, blockModels, textures, 3); png != nil {
+		return png
+	}
+	return nil
+}
+
+func deepScanTexture(model []byte, blockModels, textures map[string][]byte, depth int) []byte {
+	var m map[string]interface{}
+	if json.Unmarshal(model, &m) != nil {
+		return nil
+	}
+	if png := scanForTexture(m, textures); png != nil {
+		return png
+	}
+	if depth > 0 {
+		if parent, _ := m["parent"].(string); parent != "" {
+			if bm, ok := blockModelFor(parent, blockModels); ok {
+				return deepScanTexture(bm, blockModels, textures, depth-1)
+			}
+		}
+	}
+	return nil
+}
+
+// scanForTexture walks arbitrary JSON returning the bytes of the first string
+// value that's a real texture key, preferring common face keys.
+func scanForTexture(v interface{}, textures map[string][]byte) []byte {
+	switch t := v.(type) {
+	case string:
+		if png, ok := textures[t]; ok {
+			return png
+		}
+	case map[string]interface{}:
+		for _, k := range []string{"layer0", "texture", "side", "front", "top", "0", "all", "particle"} {
+			if s, ok := t[k].(string); ok {
+				if png, ok2 := textures[s]; ok2 {
+					return png
+				}
+			}
+		}
+		for _, vv := range t {
+			if png := scanForTexture(vv, textures); png != nil {
+				return png
+			}
+		}
+	case []interface{}:
+		for _, vv := range t {
+			if png := scanForTexture(vv, textures); png != nil {
+				return png
+			}
 		}
 	}
 	return nil

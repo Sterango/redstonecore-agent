@@ -18,7 +18,7 @@ import (
 // indexSchema is bumped whenever the cached index format changes, so stale
 // on-disk caches from an older agent are ignored (the mods signature alone
 // doesn't change when only the agent code changes).
-const indexSchema = 4
+const indexSchema = 5
 
 type Index struct {
 	Schema    int                 `json:"schema"`

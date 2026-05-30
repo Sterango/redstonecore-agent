@@ -18,7 +18,7 @@ import (
 // indexSchema is bumped whenever the cached index format changes, so stale
 // on-disk caches from an older agent are ignored (the mods signature alone
 // doesn't change when only the agent code changes).
-const indexSchema = 2
+const indexSchema = 3
 
 type Index struct {
 	Schema    int                 `json:"schema"`
@@ -87,7 +87,14 @@ func rebuild(serverDir, serverUUID, dataDir string) (*cachedIndex, error) {
 		return nil, err
 	}
 
-	idx := buildIndex(serverDir, iconsDir(dir))
+	// Include the vanilla client jar (cached/downloaded) so vanilla items,
+	// icons, recipes and tags are indexed alongside the mods.
+	var extraJars []string
+	if vj := ensureVanillaJar(serverDir, dataDir); vj != "" {
+		extraJars = append(extraJars, vj)
+	}
+
+	idx := buildIndex(serverDir, iconsDir(dir), extraJars)
 	idx.Schema = indexSchema
 	idx.Signature = modsSignature(serverDir)
 	idx.BuiltAt = time.Now().Unix()
@@ -112,8 +119,8 @@ func storeMem(serverUUID string, idx *Index) *cachedIndex {
 
 // buildIndex does a single pass over all jars, collecting models, textures,
 // lang and recipe JSON, then resolves items (+icons) and parses recipes.
-func buildIndex(serverDir, icons string) *Index {
-	jars := maprender.FindJars(serverDir)
+func buildIndex(serverDir, icons string, extraJars []string) *Index {
+	jars := append(maprender.FindJars(serverDir), extraJars...)
 
 	itemModels := map[string][]byte{}
 	blockModels := map[string][]byte{}

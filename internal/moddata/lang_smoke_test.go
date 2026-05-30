@@ -53,6 +53,7 @@ func TestModIndexSmoke(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(serverDir, "mods")); err != nil {
 		t.Skip("ATM10 fixture not present; skipping")
 	}
+	t.Setenv("RSC_SKIP_VANILLA", "1") // don't download the vanilla client jar in tests
 	dataDir := t.TempDir()
 
 	build := HandleModIndexBuild(serverDir, "test-uuid", dataDir, map[string]interface{}{"force": true})

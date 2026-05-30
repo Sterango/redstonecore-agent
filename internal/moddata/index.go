@@ -18,7 +18,7 @@ import (
 // indexSchema is bumped whenever the cached index format changes, so stale
 // on-disk caches from an older agent are ignored (the mods signature alone
 // doesn't change when only the agent code changes).
-const indexSchema = 3
+const indexSchema = 4
 
 type Index struct {
 	Schema    int                 `json:"schema"`
@@ -155,18 +155,13 @@ func buildIndex(serverDir, icons string, extraJars []string) *Index {
 						blockModels[ns+":"+strings.TrimSuffix(rest, ".json")] = b
 					}
 				}
-			case strings.Contains(name, "/textures/item/") && strings.HasSuffix(name, ".png"):
-				ns, rest := assetParts(name, "/textures/item/")
-				if ns != "" {
+			case strings.HasPrefix(name, "assets/") && strings.Contains(name, "/textures/") && strings.HasSuffix(name, ".png"):
+				// Collect textures from ALL subfolders (item/, block/, part/,
+				// particle/, …), keyed by full texture id, so any model texture
+				// reference resolves. Skip large non-icon dirs (gui, font, …).
+				if ns, rest := assetParts(name, "/textures/"); ns != "" && !skipTextureDir(rest) {
 					if b := readEntry(f); b != nil {
-						textures[ns+":item/"+strings.TrimSuffix(rest, ".png")] = b
-					}
-				}
-			case strings.Contains(name, "/textures/block/") && strings.HasSuffix(name, ".png"):
-				ns, rest := assetParts(name, "/textures/block/")
-				if ns != "" {
-					if b := readEntry(f); b != nil {
-						textures[ns+":block/"+strings.TrimSuffix(rest, ".png")] = b
+						textures[ns+":"+strings.TrimSuffix(rest, ".png")] = b
 					}
 				}
 			case strings.HasPrefix(name, "data/") && strings.Contains(name, "/recipe") && strings.HasSuffix(name, ".json"):
@@ -192,13 +187,11 @@ func buildIndex(serverDir, icons string, extraJars []string) *Index {
 	// Resolve items + write icons.
 	items := make([]Item, 0, len(itemModels))
 	for id, model := range itemModels {
-		ns, _ := splitID(id)
+		ns, path := splitID(id)
 		it := Item{ID: id, Name: displayName(id, lang), Mod: ns}
-		if texID := resolveItemTextureID(model, blockModels, 2); texID != "" {
-			if png, ok := textures[texID]; ok {
-				if os.WriteFile(filepath.Join(icons, iconFile(id)), png, 0644) == nil {
-					it.HasIcon = true
-				}
+		if png := resolveIcon(model, blockModels, textures, ns, path); png != nil {
+			if os.WriteFile(filepath.Join(icons, iconFile(id)), png, 0644) == nil {
+				it.HasIcon = true
 			}
 		}
 		items = append(items, it)
@@ -350,6 +343,21 @@ func assetParts(name, marker string) (ns, rest string) {
 		return "", ""
 	}
 	return ns, name[i+len(marker):]
+}
+
+// Large, non-item texture folders we don't need for icons.
+var nonIconTextureDirs = []string{
+	"gui/", "guis/", "font/", "patchouli/", "effect/", "environment/",
+	"painting/", "colormap/", "map/", "mob_effect/", "misc/",
+}
+
+func skipTextureDir(rest string) bool {
+	for _, d := range nonIconTextureDirs {
+		if strings.HasPrefix(rest, d) {
+			return true
+		}
+	}
+	return false
 }
 
 // dataNS returns the namespace segment of a "data/<ns>/..." path.

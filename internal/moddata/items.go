@@ -58,6 +58,22 @@ type modelJSON struct {
 	Textures map[string]string `json:"textures"`
 }
 
+// resolveIcon returns the PNG bytes for an item, trying its model's texture
+// references first, then a texture conventionally named after the item id.
+func resolveIcon(model []byte, blockModels, textures map[string][]byte, ns, path string) []byte {
+	if texID := resolveItemTextureID(model, blockModels, 2); texID != "" {
+		if png, ok := textures[texID]; ok {
+			return png
+		}
+	}
+	for _, cand := range []string{ns + ":item/" + path, ns + ":block/" + path} {
+		if png, ok := textures[cand]; ok {
+			return png
+		}
+	}
+	return nil
+}
+
 // resolveItemTextureID returns the texture id (e.g. "mekanism:item/enriched_iron")
 // for an item model, following an item→block model parent up to `depth` levels.
 func resolveItemTextureID(modelBytes []byte, blockModels map[string][]byte, depth int) string {

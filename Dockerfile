@@ -40,6 +40,10 @@ RUN addgroup -S rsc && adduser -S rsc -G rsc
 # Create directories
 RUN mkdir -p /data /config && chown -R rsc:rsc /data /config
 
+# Bundle Java 17 (musl/Alpine, matching the runtime) for Minecraft 1.17–1.20.4 packs
+# (e.g. Forge 1.20.1). The default `java` on PATH remains Java 21.
+COPY --from=eclipse-temurin:17-jre-alpine /opt/java/openjdk /opt/java17
+
 # Copy the binary from builder
 COPY --from=builder /rsc /usr/local/bin/rsc
 RUN chmod +x /usr/local/bin/rsc

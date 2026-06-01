@@ -202,9 +202,35 @@ func (a *Agent) getPublicIP() string {
 	return ""
 }
 
+// sanitizeServerDirName converts a server display name into a filesystem- and
+// shell-safe directory slug. Special characters in the path break modloader install
+// tooling: the Forge installer refuses a folder ending in '!' (the jar:file:...!/...
+// URL separator), and the ServerStarterJar mis-parses paths containing '|' or spaces
+// ("Failed to find start command in file run.sh"). To avoid this whole class of
+// failures the on-disk directory is a lowercase [a-z0-9-] slug, while the pretty
+// display name lives in the cloud DB (keyed by the server UUID, not the folder name).
+func sanitizeServerDirName(name string) string {
+	var b strings.Builder
+	prevDash := false
+	for _, r := range strings.ToLower(name) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			prevDash = false
+		} else if !prevDash {
+			b.WriteByte('-')
+			prevDash = true
+		}
+	}
+	slug := strings.Trim(b.String(), "-")
+	if slug == "" {
+		slug = "server"
+	}
+	return slug
+}
+
 func (a *Agent) initServers() error {
 	for i, serverCfg := range a.config.Servers {
-		serverDir := filepath.Join(a.config.DataDir, "servers", serverCfg.Name)
+		serverDir := filepath.Join(a.config.DataDir, "servers", sanitizeServerDirName(serverCfg.Name))
 
 		// Create server directory
 		if err := os.MkdirAll(serverDir, 0775); err != nil {
@@ -482,7 +508,7 @@ func (a *Agent) syncServers() error {
 func (a *Agent) autoStartServers() {
 	for i, serverCfg := range a.config.Servers {
 		if serverCfg.AutoStart {
-			uuid := a.loadOrCreateServerUUID(filepath.Join(a.config.DataDir, "servers", serverCfg.Name), i)
+			uuid := a.loadOrCreateServerUUID(filepath.Join(a.config.DataDir, "servers", sanitizeServerDirName(serverCfg.Name)), i)
 			if server, ok := a.servers[uuid]; ok {
 				log.Printf("Auto-starting server: %s", serverCfg.Name)
 				go func(s *minecraft.Server) {
@@ -688,7 +714,7 @@ func (a *Agent) createServer(cmd api.Command) error {
 	log.Printf("Creating server: %s (type: %s, version: %s, loader: %s)", name, serverType, version, loaderVersion)
 
 	// Create server directory
-	serverDir := filepath.Join(a.config.DataDir, "servers", name)
+	serverDir := filepath.Join(a.config.DataDir, "servers", sanitizeServerDirName(name))
 	if err := os.MkdirAll(serverDir, 0775); err != nil {
 		return fmt.Errorf("failed to create server directory: %w", err)
 	}
@@ -759,10 +785,15 @@ func (a *Agent) deleteServer(cmd api.Command) error {
 		}
 	}
 
+	// Prefer the server's actual on-disk path when it's loaded, so deletion is
+	// robust regardless of how the folder was named.
+	serverDataDir := ""
+
 	a.serversMu.Lock()
 	server, ok := a.servers[serverUUID]
 	if ok {
 		serverName = server.Name
+		serverDataDir = server.DataDir
 
 		// Stop the server if running
 		if server.Status == minecraft.StatusRunning {
@@ -784,8 +815,11 @@ func (a *Agent) deleteServer(cmd api.Command) error {
 	a.stopConsoleBuffer(serverUUID)
 
 	// Always delete files and write .deleted marker to prevent rediscovery
-	if serverName != "" {
-		serverDir := filepath.Join(a.config.DataDir, "servers", serverName)
+	serverDir := serverDataDir
+	if serverDir == "" && serverName != "" {
+		serverDir = filepath.Join(a.config.DataDir, "servers", sanitizeServerDirName(serverName))
+	}
+	if serverDir != "" {
 		if _, err := os.Stat(serverDir); err == nil {
 			// Write .deleted marker first (in case removal is interrupted)
 			markerPath := filepath.Join(serverDir, ".deleted")
@@ -901,7 +935,7 @@ func (a *Agent) createModpackServer(cmd api.Command) error {
 	log.Printf("Creating modpack server: %s (modpack: %s, loader: %s, using server pack: %v)", name, modpackName, loader, useServerPack)
 
 	// Create server directory
-	serverDir := filepath.Join(a.config.DataDir, "servers", name)
+	serverDir := filepath.Join(a.config.DataDir, "servers", sanitizeServerDirName(name))
 	if err := os.MkdirAll(serverDir, 0775); err != nil {
 		return fmt.Errorf("failed to create server directory: %w", err)
 	}

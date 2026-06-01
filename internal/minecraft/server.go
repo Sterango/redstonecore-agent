@@ -133,6 +133,11 @@ func (s *Server) Start() error {
 		jvmArgs := fmt.Sprintf("# Auto-configured by RedstoneCore\n-Xmx%dM\n-Xms%dM\n", s.AllocatedRAM, s.AllocatedRAM/2)
 		os.WriteFile(jvmArgsPath, []byte(jvmArgs), 0644)
 
+		// Pin the pack's Java runtime to match its Minecraft version, and (for Forge)
+		// bypass the broken bundled ServerStarterJar via USE_SSJ=false, so run.sh can
+		// install and launch unattended inside the Alpine agent container.
+		configureServerPack(s.DataDir)
+
 		// Execute run.sh directly
 		s.cmd = exec.Command("/bin/bash", jarPath, "--nogui")
 	} else {
@@ -143,7 +148,7 @@ func (s *Server) Start() error {
 			"-jar", jarPath,
 			"--nogui",
 		}
-		s.cmd = exec.Command("java", javaArgs...)
+		s.cmd = exec.Command(javaBinForVersion(s.MinecraftVersion), javaArgs...)
 	}
 
 	s.cmd.Dir = s.DataDir
@@ -185,6 +190,98 @@ func (s *Server) Start() error {
 
 	s.Status = StatusRunning
 	return nil
+}
+
+// java17Bin is the path to the Java 17 runtime bundled in the agent image, used for
+// Minecraft versions that require it. The default `java` on PATH is Java 21.
+const java17Bin = "/opt/java17/bin/java"
+
+// javaBinForVersion returns the Java binary appropriate for a Minecraft version.
+// MC 1.17 through 1.20.4 require Java 17; 1.20.5+ and 1.21+ use Java 21 (the image
+// default). Unknown/older versions fall back to the default `java`.
+func javaBinForVersion(mcVersion string) string {
+	parts := strings.Split(strings.TrimSpace(mcVersion), ".")
+	if len(parts) < 2 {
+		return "java"
+	}
+	minor, err := strconv.Atoi(parts[1])
+	if err != nil {
+		return "java"
+	}
+	patch := 0
+	if len(parts) >= 3 {
+		patch, _ = strconv.Atoi(parts[2])
+	}
+	// 1.17 .. 1.20.4 -> Java 17
+	if minor >= 17 && (minor < 20 || (minor == 20 && patch <= 4)) {
+		if _, err := os.Stat(java17Bin); err == nil {
+			return java17Bin
+		}
+	}
+	return "java"
+}
+
+// configureServerPack rewrites a ServerPackCreator variables.txt so the pack installs
+// and runs reliably under the agent:
+//   - JAVA / SKIP_JAVA_CHECK: pin the Java runtime matching the pack's Minecraft
+//     version and skip the pack's own (Alpine-incompatible) Java auto-install.
+//   - USE_SSJ=false for Forge packs: the bundled neoforged ServerStarterJar ("latest")
+//     does not honor run.sh's "--installer-force --installer <url>" args — it fails with
+//     "Failed to find start command in file run.sh" and never installs. USE_SSJ=false
+//     makes run.sh run forge-installer.jar --installServer directly (standard/reliable).
+//     NeoForge packs are left on the SSJ, which works for them.
+// It is a no-op if variables.txt is absent.
+func configureServerPack(dataDir string) {
+	varsPath := filepath.Join(dataDir, "variables.txt")
+	data, err := os.ReadFile(varsPath)
+	if err != nil {
+		return
+	}
+
+	// Read the pack's own MINECRAFT_VERSION / MODLOADER (authoritative).
+	mcVersion, modloader := "", ""
+	for _, line := range strings.Split(string(data), "\n") {
+		t := strings.TrimSpace(line)
+		if strings.HasPrefix(t, "MINECRAFT_VERSION=") {
+			mcVersion = strings.TrimSpace(strings.SplitN(t, "=", 2)[1])
+		} else if strings.HasPrefix(t, "MODLOADER=") {
+			modloader = strings.Trim(strings.TrimSpace(strings.SplitN(t, "=", 2)[1]), "\"")
+		}
+	}
+
+	javaBin := javaBinForVersion(mcVersion)
+	pinJava := javaBin != "java"
+	disableSSJ := strings.EqualFold(modloader, "forge")
+	if !pinJava && !disableSSJ {
+		return // nothing to change
+	}
+
+	lines := strings.Split(string(data), "\n")
+	setJava, setSkip, setSSJ := false, false, false
+	for i, line := range lines {
+		t := strings.TrimSpace(line)
+		switch {
+		case pinJava && strings.HasPrefix(t, "JAVA="):
+			lines[i] = fmt.Sprintf("JAVA=\"%s\"", javaBin)
+			setJava = true
+		case pinJava && strings.HasPrefix(t, "SKIP_JAVA_CHECK="):
+			lines[i] = "SKIP_JAVA_CHECK=true"
+			setSkip = true
+		case disableSSJ && strings.HasPrefix(t, "USE_SSJ="):
+			lines[i] = "USE_SSJ=false"
+			setSSJ = true
+		}
+	}
+	if pinJava && !setJava {
+		lines = append(lines, fmt.Sprintf("JAVA=\"%s\"", javaBin))
+	}
+	if pinJava && !setSkip {
+		lines = append(lines, "SKIP_JAVA_CHECK=true")
+	}
+	if disableSSJ && !setSSJ {
+		lines = append(lines, "USE_SSJ=false")
+	}
+	os.WriteFile(varsPath, []byte(strings.Join(lines, "\n")), 0644)
 }
 
 func (s *Server) Stop() error {

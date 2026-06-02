@@ -837,6 +837,8 @@ func (a *Agent) ExecuteCommand(cmd api.Command) error {
 			return gs.Restart()
 		case "kill":
 			return gs.Kill()
+		case "update_game_settings":
+			return a.updateGameSettings(cmd, gs)
 		default:
 			return fmt.Errorf("command %q is not supported for %s servers", cmd.Command, gs.Game)
 		}
@@ -1619,6 +1621,36 @@ func (a *Agent) discoverGameServers() error {
 		log.Printf("Discovered %s server: %s (%s)", m.Game, m.Name, uuid)
 	}
 	return nil
+}
+
+// updateGameSettings applies name/max-players/RAM changes to a game server by
+// rewriting its config + metadata and recreating the container.
+func (a *Agent) updateGameSettings(cmd api.Command, gs *gameserver.Server) error {
+	if cmd.Payload == nil {
+		return fmt.Errorf("update_game_settings requires payload")
+	}
+	changed := false
+	if name, ok := cmd.Payload["name"].(string); ok && name != "" && name != gs.Name {
+		gs.Name = name
+		changed = true
+	}
+	if mp, ok := cmd.Payload["max_players"].(float64); ok && int(mp) != gs.MaxPlayers {
+		gs.MaxPlayers = int(mp)
+		changed = true
+	}
+	if ram, ok := cmd.Payload["allocated_ram_mb"].(float64); ok && int(ram) != gs.AllocatedRAM {
+		gs.AllocatedRAM = int(ram)
+		changed = true
+	}
+	if !changed {
+		return nil
+	}
+
+	a.writeGameMeta(filepath.Dir(gs.DataDir), gameMeta{
+		Name: gs.Name, Game: gs.Game, BasePort: gs.BasePort,
+		MaxPlayers: gs.MaxPlayers, AllocatedRAM: gs.AllocatedRAM,
+	})
+	return gs.Recreate()
 }
 
 // pollGameServers refreshes live player counts (A2S) for all game servers.

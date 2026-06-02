@@ -210,16 +210,18 @@ func (s *Server) Status() string {
 	running, status := fields[0], fields[1]
 	if running == "true" {
 		switch {
-		case gameRunning:
+		case healthy:
+			// HTTPS API is responding → the server is up and joinable. (A fresh
+			// empty world reports isGameRunning=false even while healthy/ticking,
+			// so health, not isGameRunning, is the right "running" signal.)
 			return "running"
-		case healthy || claimed:
-			// API up (world loading) OR an already-provisioned server booting /
-			// applying a game update on (re)start — not a fresh install.
-			return "starting"
+		case claimed:
+			return "starting" // claimed but API not yet up (booting / applying a game update)
 		default:
 			return "installing" // first boot — still downloading the ~8GB of game files
 		}
 	}
+	_ = gameRunning // retained in state for the panel; not used for status
 	if status == "exited" && len(fields) >= 3 && fields[2] != "0" {
 		return "crashed"
 	}

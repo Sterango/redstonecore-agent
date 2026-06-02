@@ -19,6 +19,7 @@ import (
 
 	"github.com/sterango/redstonecore-agent/internal/api"
 	"github.com/sterango/redstonecore-agent/internal/config"
+	"github.com/sterango/redstonecore-agent/internal/gameserver"
 	"github.com/sterango/redstonecore-agent/internal/heartbeat"
 	"github.com/sterango/redstonecore-agent/internal/minecraft"
 	"github.com/sterango/redstonecore-agent/internal/satisfactory"
@@ -38,6 +39,8 @@ type Agent struct {
 	serversMu      sync.RWMutex
 	satServers     map[string]*satisfactory.Server // Satisfactory servers (sibling Docker containers)
 	satServersMu   sync.RWMutex
+	gameServers    map[string]*gameserver.Server // LinuxGSM-backed games (sibling containers)
+	gameServersMu  sync.RWMutex
 	hostDataDir    string // host path of the agent's /data, for sibling container mounts
 	consoleBuffers map[string]*minecraft.ConsoleBuffer
 	consoleMu      sync.RWMutex
@@ -51,6 +54,7 @@ func New(cfg *config.Config) *Agent {
 		client:         client,
 		servers:        make(map[string]*minecraft.Server),
 		satServers:     make(map[string]*satisfactory.Server),
+		gameServers:    make(map[string]*gameserver.Server),
 		consoleBuffers: make(map[string]*minecraft.ConsoleBuffer),
 	}
 }
@@ -84,10 +88,14 @@ func (a *Agent) Run() error {
 	if err := a.discoverSatisfactoryServers(); err != nil {
 		log.Printf("Warning: Failed to discover Satisfactory servers: %v", err)
 	}
+	if err := a.discoverGameServers(); err != nil {
+		log.Printf("Warning: Failed to discover game servers: %v", err)
+	}
 
-	// Periodically poll Satisfactory servers for live state (players, health)
-	// and push it to the panel.
+	// Periodically poll Satisfactory + LinuxGSM game servers for live state and
+	// push it to the panel.
 	go a.pollSatisfactory()
+	go a.pollGameServers()
 
 	// Sync servers to cloud
 	if err := a.syncServers(); err != nil {
@@ -321,9 +329,12 @@ func (a *Agent) discoverServers() error {
 			continue
 		}
 
-		// Skip Satisfactory servers — they run as sibling Docker containers and
-		// are loaded by discoverSatisfactoryServers, not as Minecraft processes.
+		// Skip non-Minecraft games (Satisfactory + LinuxGSM games) — they run as
+		// sibling containers and are loaded by their own discovery, not as MC.
 		if _, err := os.Stat(filepath.Join(serverDir, ".satisfactory")); err == nil {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(serverDir, ".gameserver")); err == nil {
 			continue
 		}
 
@@ -503,6 +514,21 @@ func (a *Agent) syncServers() error {
 	}
 	a.satServersMu.RUnlock()
 
+	a.gameServersMu.RLock()
+	for _, gs := range a.gameServers {
+		servers = append(servers, api.SyncServer{
+			UUID:         gs.UUID,
+			Name:         gs.Name,
+			Game:         gs.Game,
+			Type:         "other",
+			Port:         gs.BasePort,
+			MaxPlayers:   gs.MaxPlayers,
+			AllocatedRAM: gs.AllocatedRAM,
+			Status:       gs.Status(),
+		})
+	}
+	a.gameServersMu.RUnlock()
+
 	if len(servers) == 0 {
 		return nil
 	}
@@ -616,6 +642,13 @@ func (a *Agent) getServerDataDir(serverUUID string) (string, error) {
 	}
 	a.satServersMu.RUnlock()
 
+	a.gameServersMu.RLock()
+	if gs, exists := a.gameServers[serverUUID]; exists {
+		a.gameServersMu.RUnlock()
+		return gs.DataDir, nil
+	}
+	a.gameServersMu.RUnlock()
+
 	return "", fmt.Errorf("server not found: %s", serverUUID)
 }
 
@@ -642,6 +675,16 @@ func (a *Agent) GetServerStatuses() []api.ServerStatus {
 		})
 	}
 	a.satServersMu.RUnlock()
+
+	a.gameServersMu.RLock()
+	for _, gs := range a.gameServers {
+		statuses = append(statuses, api.ServerStatus{
+			UUID:        gs.UUID,
+			Status:      gs.Status(),
+			PlayerCount: gs.PlayerCount(),
+		})
+	}
+	a.gameServersMu.RUnlock()
 
 	return statuses
 }
@@ -671,6 +714,33 @@ func (a *Agent) GetServerAnalytics() []heartbeat.ServerAnalytics {
 		})
 	}
 
+	// Container games (Satisfactory + LinuxGSM) report live memory/CPU via docker stats.
+	a.satServersMu.RLock()
+	for _, sat := range a.satServers {
+		if sat.Status() != "running" {
+			continue
+		}
+		mem, cpu := gameserver.ContainerStats(satisfactory.ContainerName(sat.UUID))
+		analytics = append(analytics, heartbeat.ServerAnalytics{
+			UUID: sat.UUID, PlayerCount: sat.PlayerCount(),
+			MemoryUsedMB: mem, MemoryMaxMB: sat.AllocatedRAM, CPUPercent: cpu,
+		})
+	}
+	a.satServersMu.RUnlock()
+
+	a.gameServersMu.RLock()
+	for _, gs := range a.gameServers {
+		if gs.Status() != "running" {
+			continue
+		}
+		mem, cpu := gs.Stats()
+		analytics = append(analytics, heartbeat.ServerAnalytics{
+			UUID: gs.UUID, PlayerCount: gs.PlayerCount(),
+			MemoryUsedMB: mem, MemoryMaxMB: gs.AllocatedRAM, CPUPercent: cpu,
+		})
+	}
+	a.gameServersMu.RUnlock()
+
 	return analytics
 }
 
@@ -678,8 +748,12 @@ func (a *Agent) GetServerAnalytics() []heartbeat.ServerAnalytics {
 func (a *Agent) ExecuteCommand(cmd api.Command) error {
 	// Handle create_server command specially (no existing server)
 	if cmd.Command == "create_server" {
-		if game, _ := cmd.Payload["game"].(string); game == "satisfactory" {
+		game, _ := cmd.Payload["game"].(string)
+		if game == "satisfactory" {
 			return a.createSatisfactoryServer(cmd)
+		}
+		if gameserver.IsGame(game) {
+			return a.createGameServer(cmd, game)
 		}
 		return a.createServer(cmd)
 	}
@@ -700,6 +774,12 @@ func (a *Agent) ExecuteCommand(cmd api.Command) error {
 		a.satServersMu.RUnlock()
 		if isSat {
 			return a.deleteSatisfactoryServer(uuid)
+		}
+		a.gameServersMu.RLock()
+		_, isGame := a.gameServers[uuid]
+		a.gameServersMu.RUnlock()
+		if isGame {
+			return a.deleteGameServer(uuid)
 		}
 		return a.deleteServer(cmd)
 	}
@@ -740,6 +820,25 @@ func (a *Agent) ExecuteCommand(cmd api.Command) error {
 			return a.removeSatisfactoryMod(cmd, sat)
 		default:
 			return fmt.Errorf("command %q is not supported for Satisfactory servers", cmd.Command)
+		}
+	}
+
+	// LinuxGSM game servers (Valheim, Rust, …) — shared lifecycle only.
+	a.gameServersMu.RLock()
+	gs, isGame := a.gameServers[cmd.ServerUUID]
+	a.gameServersMu.RUnlock()
+	if isGame {
+		switch cmd.Command {
+		case "start":
+			return gs.Start()
+		case "stop":
+			return gs.Stop()
+		case "restart":
+			return gs.Restart()
+		case "kill":
+			return gs.Kill()
+		default:
+			return fmt.Errorf("command %q is not supported for %s servers", cmd.Command, gs.Game)
 		}
 	}
 
@@ -1127,16 +1226,34 @@ func (a *Agent) pollSatisfactory() {
 // has no interactive console, so this is read-only). It re-attaches across
 // container restarts and exits once the server is deleted.
 func (a *Agent) streamSatisfactoryLogs(uuid string) {
+	a.streamContainerLogs(uuid, satisfactory.ContainerName(uuid), func() bool {
+		a.satServersMu.RLock()
+		defer a.satServersMu.RUnlock()
+		_, ok := a.satServers[uuid]
+		return ok
+	})
+}
+
+// streamGameLogs tails a LinuxGSM game server's container logs into the console.
+func (a *Agent) streamGameLogs(uuid string) {
+	a.streamContainerLogs(uuid, gameserver.ContainerName(uuid), func() bool {
+		a.gameServersMu.RLock()
+		defer a.gameServersMu.RUnlock()
+		_, ok := a.gameServers[uuid]
+		return ok
+	})
+}
+
+// streamContainerLogs tails a container's logs into the console buffer, re-attaching
+// across restarts, until stillTracked reports the server is gone.
+func (a *Agent) streamContainerLogs(uuid, container string, stillTracked func() bool) {
 	buf := a.createConsoleBuffer(uuid)
 	for {
-		a.satServersMu.RLock()
-		_, ok := a.satServers[uuid]
-		a.satServersMu.RUnlock()
-		if !ok {
+		if !stillTracked() {
 			return // server deleted
 		}
 
-		cmd := exec.Command("docker", "logs", "-f", "--tail", "150", satisfactory.ContainerName(uuid))
+		cmd := exec.Command("docker", "logs", "-f", "--tail", "150", container)
 		pr, pw := io.Pipe()
 		cmd.Stdout = pw
 		cmd.Stderr = pw
@@ -1327,6 +1444,198 @@ func boolOpt(v bool) string {
 		return "1"
 	}
 	return "0"
+}
+
+// ===========================================================================
+// Generic LinuxGSM game servers (Valheim, Rust, CS2, …)
+// ===========================================================================
+
+// gameMeta is persisted in each game server dir (.gameserver) for rediscovery.
+type gameMeta struct {
+	Name         string `json:"name"`
+	Game         string `json:"game"`
+	BasePort     int    `json:"base_port"`
+	MaxPlayers   int    `json:"max_players"`
+	AllocatedRAM int    `json:"allocated_ram_mb"`
+}
+
+// hostGameDataPath translates an in-container server dir to the host path of its
+// /data subdir (the LinuxGSM home, bind-mounted into the game container).
+func (a *Agent) hostGameDataPath(serverDir string) string {
+	rel, err := filepath.Rel(a.config.DataDir, serverDir)
+	if err != nil {
+		rel = filepath.Base(serverDir)
+	}
+	return filepath.Join(a.hostDataDir, rel, "data")
+}
+
+func (a *Agent) writeGameMeta(serverDir string, m gameMeta) {
+	data, err := json.Marshal(m)
+	if err != nil {
+		return
+	}
+	if err := os.WriteFile(filepath.Join(serverDir, ".gameserver"), data, 0644); err != nil {
+		log.Printf("Warning: failed to write game metadata: %v", err)
+	}
+}
+
+// createGameServer handles create_server for a LinuxGSM-supported game.
+func (a *Agent) createGameServer(cmd api.Command, game string) error {
+	if cmd.Payload == nil {
+		return fmt.Errorf("create_server requires payload")
+	}
+	name, _ := cmd.Payload["name"].(string)
+	basePort, _ := cmd.Payload["port"].(float64)
+	maxPlayers, _ := cmd.Payload["max_players"].(float64)
+	ram, _ := cmd.Payload["allocated_ram_mb"].(float64)
+	if name == "" {
+		return fmt.Errorf("server name is required")
+	}
+	if a.hostDataDir == "" {
+		a.hostDataDir = a.resolveHostDataDir()
+	}
+
+	serverDir := filepath.Join(a.config.DataDir, "servers", sanitizeServerDirName(name))
+	dataDir := filepath.Join(serverDir, "data")
+	if err := os.MkdirAll(dataDir, 0o777); err != nil {
+		return fmt.Errorf("failed to create server directory: %w", err)
+	}
+	os.WriteFile(filepath.Join(serverDir, ".uuid"), []byte(cmd.ServerUUID), 0644)
+	a.writeGameMeta(serverDir, gameMeta{
+		Name: name, Game: game, BasePort: int(basePort),
+		MaxPlayers: int(maxPlayers), AllocatedRAM: int(ram),
+	})
+
+	gs, err := gameserver.NewServer(gameserver.Config{
+		UUID: cmd.ServerUUID, Name: name, Game: game,
+		BasePort: int(basePort), MaxPlayers: int(maxPlayers), AllocatedRAM: int(ram),
+		DataDir: dataDir, HostData: a.hostGameDataPath(serverDir),
+	})
+	if err != nil {
+		return err
+	}
+
+	a.gameServersMu.Lock()
+	a.gameServers[cmd.ServerUUID] = gs
+	a.gameServersMu.Unlock()
+
+	log.Printf("Creating %s server: %s (base port %d)", game, name, int(basePort))
+	if err := gs.Install(func(stage, message string) {
+		log.Printf("[%s] %s: %s", game, stage, message)
+	}); err != nil {
+		return fmt.Errorf("failed to install %s server: %w", game, err)
+	}
+
+	go a.streamGameLogs(cmd.ServerUUID)
+	log.Printf("%s server %s created.", game, name)
+	return nil
+}
+
+// deleteGameServer stops/removes the container and deletes the data dir.
+func (a *Agent) deleteGameServer(uuid string) error {
+	a.gameServersMu.Lock()
+	gs, ok := a.gameServers[uuid]
+	if ok {
+		delete(a.gameServers, uuid)
+	}
+	a.gameServersMu.Unlock()
+
+	a.stopConsoleBuffer(uuid)
+
+	serverDir := ""
+	if ok {
+		serverDir = filepath.Dir(gs.DataDir) // DataDir is <serverDir>/data
+		if err := gs.Remove(); err != nil {
+			log.Printf("Warning: failed to remove game container: %v", err)
+		}
+	} else {
+		_ = exec.Command("docker", "rm", "-f", gameserver.ContainerName(uuid)).Run()
+	}
+
+	if serverDir != "" {
+		os.WriteFile(filepath.Join(serverDir, ".deleted"), []byte("deleted"), 0644)
+		if err := os.RemoveAll(serverDir); err != nil {
+			log.Printf("Warning: failed to delete game server files: %v", err)
+		}
+	}
+	log.Printf("Game server %s deleted.", uuid)
+	return nil
+}
+
+// discoverGameServers re-attaches LinuxGSM game servers after an agent restart.
+func (a *Agent) discoverGameServers() error {
+	serversDir := filepath.Join(a.config.DataDir, "servers")
+	entries, err := os.ReadDir(serversDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("failed to read servers directory: %w", err)
+	}
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		serverDir := filepath.Join(serversDir, entry.Name())
+		if _, err := os.Stat(filepath.Join(serverDir, ".deleted")); err == nil {
+			continue
+		}
+		metaData, err := os.ReadFile(filepath.Join(serverDir, ".gameserver"))
+		if err != nil {
+			continue
+		}
+		uuidData, err := os.ReadFile(filepath.Join(serverDir, ".uuid"))
+		if err != nil {
+			continue
+		}
+		uuid := strings.TrimSpace(string(uuidData))
+
+		a.gameServersMu.RLock()
+		_, exists := a.gameServers[uuid]
+		a.gameServersMu.RUnlock()
+		if exists {
+			continue
+		}
+
+		var m gameMeta
+		if json.Unmarshal(metaData, &m) != nil {
+			continue
+		}
+		gs, err := gameserver.NewServer(gameserver.Config{
+			UUID: uuid, Name: m.Name, Game: m.Game,
+			BasePort: m.BasePort, MaxPlayers: m.MaxPlayers, AllocatedRAM: m.AllocatedRAM,
+			DataDir: filepath.Join(serverDir, "data"), HostData: a.hostGameDataPath(serverDir),
+		})
+		if err != nil {
+			log.Printf("Warning: discover game server %s: %v", entry.Name(), err)
+			continue
+		}
+
+		a.gameServersMu.Lock()
+		a.gameServers[uuid] = gs
+		a.gameServersMu.Unlock()
+		go a.streamGameLogs(uuid)
+		log.Printf("Discovered %s server: %s (%s)", m.Game, m.Name, uuid)
+	}
+	return nil
+}
+
+// pollGameServers refreshes live player counts (A2S) for all game servers.
+func (a *Agent) pollGameServers() {
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+	for range ticker.C {
+		a.gameServersMu.RLock()
+		servers := make([]*gameserver.Server, 0, len(a.gameServers))
+		for _, gs := range a.gameServers {
+			servers = append(servers, gs)
+		}
+		a.gameServersMu.RUnlock()
+		for _, gs := range servers {
+			gs.Poll()
+		}
+	}
 }
 
 // deleteServer handles the delete_server command from cloud

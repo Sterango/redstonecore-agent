@@ -17,7 +17,7 @@ RUN go mod tidy
 
 # Build the binary
 RUN CGO_ENABLED=0 GOOS=linux go build \
-    -ldflags="-w -s -X github.com/sterango/redstonecore-agent/internal/version.Version=1.7.17 -X github.com/sterango/redstonecore-agent/internal/version.BuildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    -ldflags="-w -s -X github.com/sterango/redstonecore-agent/internal/version.Version=1.7.19 -X github.com/sterango/redstonecore-agent/internal/version.BuildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     -o /rsc \
     ./cmd/rsc
 
@@ -33,6 +33,13 @@ RUN apk add --no-cache \
     docker-cli \
     docker-cli-compose \
     7zip
+
+# Bundle ficsit-cli for Satisfactory mod management (Alpine package = musl-safe)
+RUN curl -fsSL -o /tmp/ficsit.apk \
+    https://github.com/satisfactorymodding/ficsit-cli/releases/latest/download/ficsit_linux_amd64.apk \
+    && apk add --no-cache --allow-untrusted /tmp/ficsit.apk \
+    && rm /tmp/ficsit.apk \
+    && ficsit --help >/dev/null 2>&1 || true
 
 # Create non-root user for security
 RUN addgroup -S rsc && adduser -S rsc -G rsc

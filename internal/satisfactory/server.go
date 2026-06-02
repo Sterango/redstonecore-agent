@@ -192,6 +192,7 @@ func (s *Server) Status() string {
 	installing := s.installing
 	healthy := s.healthy
 	gameRunning := s.gameRunning
+	claimed := s.creds.Claimed
 	s.mu.Unlock()
 	if installing {
 		return "installing"
@@ -211,10 +212,12 @@ func (s *Server) Status() string {
 		switch {
 		case gameRunning:
 			return "running"
-		case healthy:
-			return "starting" // API up, world still loading
+		case healthy || claimed:
+			// API up (world loading) OR an already-provisioned server booting /
+			// applying a game update on (re)start — not a fresh install.
+			return "starting"
 		default:
-			return "installing" // container up, game files still downloading on first boot
+			return "installing" // first boot — still downloading the ~8GB of game files
 		}
 	}
 	if status == "exited" && len(fields) >= 3 && fields[2] != "0" {

@@ -734,6 +734,10 @@ func (a *Agent) ExecuteCommand(cmd api.Command) error {
 		case "save_satisfactory":
 			name, _ := cmd.Payload["save_name"].(string)
 			return sat.SaveWorld(name)
+		case "install_satisfactory_mod":
+			return a.installSatisfactoryMod(cmd, sat)
+		case "remove_satisfactory_mod":
+			return a.removeSatisfactoryMod(cmd, sat)
 		default:
 			return fmt.Errorf("command %q is not supported for Satisfactory servers", cmd.Command)
 		}
@@ -1172,6 +1176,7 @@ func (a *Agent) pushSatState(uuid string, sat *satisfactory.Server) {
 		"sat_game_running":    boolStr(st.GameRunning),
 		"sat_paused":          boolStr(st.Paused),
 		"sat_tick_rate":       fmt.Sprintf("%.1f", st.TickRate),
+		"sat_mods":            sat.ModsJSON(),
 	}
 	if err := a.client.SyncProperties(&api.PropertiesRequest{ServerUUID: uuid, Properties: props}); err != nil {
 		log.Printf("[Satisfactory] failed to push state for %s: %v", uuid, err)
@@ -1240,6 +1245,74 @@ func (a *Agent) applySatisfactorySettings(cmd api.Command, sat *satisfactory.Ser
 
 	a.pushSatState(cmd.ServerUUID, sat)
 	return firstErr
+}
+
+// installSatisfactoryMod adds a mod (via ficsit-cli) to the server and restarts
+// it with the mods applied. Installing a mod forces modded posture
+// (SKIPUPDATE=true) so a game update can't outrun SML.
+func (a *Agent) installSatisfactoryMod(cmd api.Command, sat *satisfactory.Server) error {
+	if cmd.Payload == nil {
+		return fmt.Errorf("install_satisfactory_mod requires payload")
+	}
+	ref, _ := cmd.Payload["mod_reference"].(string)
+	version, _ := cmd.Payload["version"].(string)
+	if ref == "" {
+		return fmt.Errorf("mod_reference is required")
+	}
+
+	a.ensureModdedPosture(sat)
+	if err := sat.AddMod(ref, version); err != nil {
+		return err
+	}
+	return a.applyModsAndRestart(cmd.ServerUUID, sat)
+}
+
+// removeSatisfactoryMod removes a mod and restarts the server.
+func (a *Agent) removeSatisfactoryMod(cmd api.Command, sat *satisfactory.Server) error {
+	if cmd.Payload == nil {
+		return fmt.Errorf("remove_satisfactory_mod requires payload")
+	}
+	ref, _ := cmd.Payload["mod_reference"].(string)
+	if ref == "" {
+		return fmt.Errorf("mod_reference is required")
+	}
+	if err := sat.RemoveMod(ref); err != nil {
+		return err
+	}
+	return a.applyModsAndRestart(cmd.ServerUUID, sat)
+}
+
+// ensureModdedPosture pins the game build (SKIPUPDATE=true) so SML isn't outrun
+// by a Steam game update. Persists the change; the container is recreated by
+// applyModsAndRestart.
+func (a *Agent) ensureModdedPosture(sat *satisfactory.Server) {
+	if sat.SkipUpdate {
+		return
+	}
+	sat.SkipUpdate = true
+	a.writeSatisfactoryMeta(sat.DataDir, satMeta{
+		Name:         sat.Name,
+		GamePort:     sat.GamePort,
+		ReliablePort: sat.ReliablePort,
+		MaxPlayers:   sat.MaxPlayers,
+		AllocatedRAM: sat.AllocatedRAM,
+		SkipUpdate:   true,
+	})
+}
+
+// applyModsAndRestart stops the server, installs/updates the mods to match the
+// profile, then recreates the container so it boots with the new mod set.
+func (a *Agent) applyModsAndRestart(uuid string, sat *satisfactory.Server) error {
+	_ = sat.Stop() // mods are applied against a stopped install
+	if err := sat.ApplyMods(); err != nil {
+		return err
+	}
+	if err := sat.Recreate(); err != nil {
+		return err
+	}
+	go sat.Provision(func() { a.pushSatState(uuid, sat) })
+	a.pushSatState(uuid, sat)
+	return nil
 }
 
 func boolStr(v bool) string {

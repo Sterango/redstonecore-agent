@@ -2,6 +2,7 @@ package agent
 
 import (
 	"crypto/rand"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -19,6 +20,7 @@ import (
 	"github.com/sterango/redstonecore-agent/internal/config"
 	"github.com/sterango/redstonecore-agent/internal/heartbeat"
 	"github.com/sterango/redstonecore-agent/internal/minecraft"
+	"github.com/sterango/redstonecore-agent/internal/satisfactory"
 	"github.com/sterango/redstonecore-agent/internal/sftp"
 	"gopkg.in/yaml.v3"
 )
@@ -33,6 +35,9 @@ type Agent struct {
 	sftpClient     *sftp.Client
 	servers        map[string]*minecraft.Server
 	serversMu      sync.RWMutex
+	satServers     map[string]*satisfactory.Server // Satisfactory servers (sibling Docker containers)
+	satServersMu   sync.RWMutex
+	hostDataDir    string // host path of the agent's /data, for sibling container mounts
 	consoleBuffers map[string]*minecraft.ConsoleBuffer
 	consoleMu      sync.RWMutex
 }
@@ -44,6 +49,7 @@ func New(cfg *config.Config) *Agent {
 		config:         cfg,
 		client:         client,
 		servers:        make(map[string]*minecraft.Server),
+		satServers:     make(map[string]*satisfactory.Server),
 		consoleBuffers: make(map[string]*minecraft.ConsoleBuffer),
 	}
 }
@@ -70,6 +76,17 @@ func (a *Agent) Run() error {
 	if err := a.discoverServers(); err != nil {
 		log.Printf("Warning: Failed to discover existing servers: %v", err)
 	}
+
+	// Resolve the host path of /data (needed to mount sibling game containers)
+	// and re-attach any existing Satisfactory servers.
+	a.hostDataDir = a.resolveHostDataDir()
+	if err := a.discoverSatisfactoryServers(); err != nil {
+		log.Printf("Warning: Failed to discover Satisfactory servers: %v", err)
+	}
+
+	// Periodically poll Satisfactory servers for live state (players, health)
+	// and push it to the panel.
+	go a.pollSatisfactory()
 
 	// Sync servers to cloud
 	if err := a.syncServers(); err != nil {
@@ -303,6 +320,12 @@ func (a *Agent) discoverServers() error {
 			continue
 		}
 
+		// Skip Satisfactory servers — they run as sibling Docker containers and
+		// are loaded by discoverSatisfactoryServers, not as Minecraft processes.
+		if _, err := os.Stat(filepath.Join(serverDir, ".satisfactory")); err == nil {
+			continue
+		}
+
 		uuidFile := filepath.Join(serverDir, ".uuid")
 
 		// Check if this server has a UUID file
@@ -449,6 +472,7 @@ func (a *Agent) syncServers() error {
 		servers = append(servers, api.SyncServer{
 			UUID:             server.UUID,
 			Name:             server.Name,
+			Game:             "minecraft",
 			Type:             string(server.Type),
 			MinecraftVersion: server.MinecraftVersion,
 			Port:             server.Port,
@@ -459,6 +483,24 @@ func (a *Agent) syncServers() error {
 			CurrentPlayers:   server.GetCurrentPlayers(),
 		})
 	}
+
+	// Satisfactory servers (sibling containers). Reconciliation/orphan-removal
+	// below only touches the Minecraft map; Satisfactory removal is driven by the
+	// explicit delete_server command.
+	a.satServersMu.RLock()
+	for _, sat := range a.satServers {
+		servers = append(servers, api.SyncServer{
+			UUID:         sat.UUID,
+			Name:         sat.Name,
+			Game:         "satisfactory",
+			Type:         "other",
+			Port:         sat.GamePort,
+			MaxPlayers:   sat.MaxPlayers,
+			AllocatedRAM: sat.AllocatedRAM,
+			Status:       sat.Status(),
+		})
+	}
+	a.satServersMu.RUnlock()
 
 	if len(servers) == 0 {
 		return nil
@@ -566,6 +608,13 @@ func (a *Agent) getServerDataDir(serverUUID string) (string, error) {
 		return server.DataDir, nil
 	}
 
+	a.satServersMu.RLock()
+	if sat, exists := a.satServers[serverUUID]; exists {
+		a.satServersMu.RUnlock()
+		return sat.DataDir, nil
+	}
+	a.satServersMu.RUnlock()
+
 	return "", fmt.Errorf("server not found: %s", serverUUID)
 }
 
@@ -582,6 +631,16 @@ func (a *Agent) GetServerStatuses() []api.ServerStatus {
 			PlayerCount: server.PlayerCount,
 		})
 	}
+
+	a.satServersMu.RLock()
+	for _, sat := range a.satServers {
+		statuses = append(statuses, api.ServerStatus{
+			UUID:        sat.UUID,
+			Status:      sat.Status(),
+			PlayerCount: sat.PlayerCount(),
+		})
+	}
+	a.satServersMu.RUnlock()
 
 	return statuses
 }
@@ -618,6 +677,9 @@ func (a *Agent) GetServerAnalytics() []heartbeat.ServerAnalytics {
 func (a *Agent) ExecuteCommand(cmd api.Command) error {
 	// Handle create_server command specially (no existing server)
 	if cmd.Command == "create_server" {
+		if game, _ := cmd.Payload["game"].(string); game == "satisfactory" {
+			return a.createSatisfactoryServer(cmd)
+		}
 		return a.createServer(cmd)
 	}
 
@@ -626,8 +688,18 @@ func (a *Agent) ExecuteCommand(cmd api.Command) error {
 		return a.createModpackServer(cmd)
 	}
 
-	// Handle delete_server command
+	// Handle delete_server command (route to the right game manager)
 	if cmd.Command == "delete_server" {
+		uuid := cmd.ServerUUID
+		if uuid == "" && cmd.Payload != nil {
+			uuid, _ = cmd.Payload["server_uuid"].(string)
+		}
+		a.satServersMu.RLock()
+		_, isSat := a.satServers[uuid]
+		a.satServersMu.RUnlock()
+		if isSat {
+			return a.deleteSatisfactoryServer(uuid)
+		}
 		return a.deleteServer(cmd)
 	}
 
@@ -639,6 +711,31 @@ func (a *Agent) ExecuteCommand(cmd api.Command) error {
 	// Handle update_agent command (self-update via Docker)
 	if cmd.Command == "update_agent" {
 		return a.updateAgent(cmd)
+	}
+
+	// Satisfactory servers are managed as sibling Docker containers; only the
+	// shared lifecycle commands apply (no console/plugins/properties/etc.).
+	a.satServersMu.RLock()
+	sat, isSat := a.satServers[cmd.ServerUUID]
+	a.satServersMu.RUnlock()
+	if isSat {
+		switch cmd.Command {
+		case "start":
+			return sat.Start()
+		case "stop":
+			return sat.Stop()
+		case "restart":
+			return sat.Restart()
+		case "kill":
+			return sat.Kill()
+		case "update_satisfactory_settings":
+			return a.applySatisfactorySettings(cmd, sat)
+		case "save_satisfactory":
+			name, _ := cmd.Payload["save_name"].(string)
+			return sat.SaveWorld(name)
+		default:
+			return fmt.Errorf("command %q is not supported for Satisfactory servers", cmd.Command)
+		}
 	}
 
 	a.serversMu.RLock()
@@ -765,6 +862,350 @@ func (a *Agent) createServer(cmd api.Command) error {
 	log.Printf("Downloaded JAR to: %s", jarPath)
 	log.Printf("Server %s created successfully!", name)
 	return nil
+}
+
+// satMeta is persisted in each Satisfactory server dir (.satisfactory) so the
+// server can be re-attached after an agent restart without parsing Docker.
+type satMeta struct {
+	Name         string `json:"name"`
+	GamePort     int    `json:"game_port"`
+	ReliablePort int    `json:"reliable_port"`
+	MaxPlayers   int    `json:"max_players"`
+	AllocatedRAM int    `json:"allocated_ram_mb"`
+	SkipUpdate   bool   `json:"skip_update,omitempty"`
+}
+
+// resolveHostDataDir finds the host path backing the agent's /data volume, which
+// sibling game containers need for their bind mounts (a container's -v always
+// references HOST paths). Prefers the explicit RSC_HOST_DATA_DIR, then inspects
+// the agent's own container, then derives it from the compose mount.
+func (a *Agent) resolveHostDataDir() string {
+	if a.config.HostDataDir != "" {
+		return a.config.HostDataDir
+	}
+	out, err := exec.Command("docker", "inspect", "redstonecore",
+		"--format", `{{range .Mounts}}{{if eq .Destination "/data"}}{{.Source}}{{end}}{{end}}`).Output()
+	if err == nil {
+		if p := strings.TrimSpace(string(out)); p != "" {
+			return p
+		}
+	}
+	if cp := a.findHostComposePath(); cp != "" {
+		return filepath.Join(filepath.Dir(cp), "data")
+	}
+	log.Printf("[Satisfactory] Could not resolve host data dir; sibling container mounts may fail")
+	return ""
+}
+
+// hostServerConfigPath translates an in-container server dir to the host path of
+// its /config subdir (mounted into the Satisfactory container).
+func (a *Agent) hostServerConfigPath(serverDir string) string {
+	rel, err := filepath.Rel(a.config.DataDir, serverDir)
+	if err != nil {
+		rel = filepath.Base(serverDir)
+	}
+	return filepath.Join(a.hostDataDir, rel, "config")
+}
+
+// createSatisfactoryServer handles create_server when game == "satisfactory".
+func (a *Agent) createSatisfactoryServer(cmd api.Command) error {
+	if cmd.Payload == nil {
+		return fmt.Errorf("create_server requires payload")
+	}
+
+	name, _ := cmd.Payload["name"].(string)
+	gamePort, _ := cmd.Payload["port"].(float64)
+	reliablePort, _ := cmd.Payload["reliable_port"].(float64)
+	maxPlayers, _ := cmd.Payload["max_players"].(float64)
+	ram, _ := cmd.Payload["allocated_ram_mb"].(float64)
+	skipUpdate, _ := cmd.Payload["skip_update"].(bool)
+
+	if name == "" {
+		return fmt.Errorf("server name is required")
+	}
+	if reliablePort == 0 {
+		reliablePort = gamePort + 1111
+	}
+	if a.hostDataDir == "" {
+		a.hostDataDir = a.resolveHostDataDir()
+	}
+
+	serverDir := filepath.Join(a.config.DataDir, "servers", sanitizeServerDirName(name))
+	if err := os.MkdirAll(filepath.Join(serverDir, "config"), 0775); err != nil {
+		return fmt.Errorf("failed to create server directory: %w", err)
+	}
+	os.WriteFile(filepath.Join(serverDir, ".uuid"), []byte(cmd.ServerUUID), 0644)
+	a.writeSatisfactoryMeta(serverDir, satMeta{
+		Name:         name,
+		GamePort:     int(gamePort),
+		ReliablePort: int(reliablePort),
+		MaxPlayers:   int(maxPlayers),
+		AllocatedRAM: int(ram),
+		SkipUpdate:   skipUpdate,
+	})
+
+	sat := satisfactory.NewServer(satisfactory.Config{
+		UUID:         cmd.ServerUUID,
+		Name:         name,
+		GamePort:     int(gamePort),
+		ReliablePort: int(reliablePort),
+		MaxPlayers:   int(maxPlayers),
+		AllocatedRAM: int(ram),
+		DataDir:      serverDir,
+		HostConfig:   a.hostServerConfigPath(serverDir),
+		SkipUpdate:   skipUpdate,
+	})
+
+	a.satServersMu.Lock()
+	a.satServers[cmd.ServerUUID] = sat
+	a.satServersMu.Unlock()
+
+	log.Printf("Creating Satisfactory server: %s (game port %d, reliable %d)", name, int(gamePort), int(reliablePort))
+	if err := sat.Install(func(stage, message string) {
+		log.Printf("[Satisfactory] %s: %s", stage, message)
+	}); err != nil {
+		return fmt.Errorf("failed to install Satisfactory server: %w", err)
+	}
+
+	// Provision (claim + create world) once the API comes up, then keep the
+	// panel posted on credentials/state. Runs in the background — first boot
+	// downloads several GB before the API responds.
+	go sat.Provision(func() { a.pushSatState(cmd.ServerUUID, sat) })
+
+	log.Printf("Satisfactory server %s created.", name)
+	return nil
+}
+
+// writeSatisfactoryMeta persists the .satisfactory marker/metadata file.
+func (a *Agent) writeSatisfactoryMeta(serverDir string, m satMeta) {
+	data, err := json.Marshal(m)
+	if err != nil {
+		log.Printf("Warning: failed to marshal Satisfactory metadata: %v", err)
+		return
+	}
+	if err := os.WriteFile(filepath.Join(serverDir, ".satisfactory"), data, 0644); err != nil {
+		log.Printf("Warning: failed to write Satisfactory metadata: %v", err)
+	}
+}
+
+// deleteSatisfactoryServer stops/removes the container and deletes the data dir.
+func (a *Agent) deleteSatisfactoryServer(uuid string) error {
+	a.satServersMu.Lock()
+	sat, ok := a.satServers[uuid]
+	if ok {
+		delete(a.satServers, uuid)
+	}
+	a.satServersMu.Unlock()
+
+	serverDir := ""
+	if ok {
+		serverDir = sat.DataDir
+		if err := sat.Remove(); err != nil {
+			log.Printf("Warning: failed to remove Satisfactory container: %v", err)
+		}
+	} else {
+		// Best-effort removal by container name even if not tracked.
+		_ = exec.Command("docker", "rm", "-f", satisfactory.ContainerName(uuid)).Run()
+	}
+
+	if serverDir != "" {
+		os.WriteFile(filepath.Join(serverDir, ".deleted"), []byte("deleted"), 0644)
+		if err := os.RemoveAll(serverDir); err != nil {
+			log.Printf("Warning: failed to delete Satisfactory server files: %v", err)
+		}
+	}
+
+	log.Printf("Satisfactory server %s deleted.", uuid)
+	return nil
+}
+
+// discoverSatisfactoryServers re-attaches Satisfactory servers (by their
+// .satisfactory metadata) after an agent restart, so their containers aren't
+// orphaned.
+func (a *Agent) discoverSatisfactoryServers() error {
+	serversDir := filepath.Join(a.config.DataDir, "servers")
+	entries, err := os.ReadDir(serversDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("failed to read servers directory: %w", err)
+	}
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		serverDir := filepath.Join(serversDir, entry.Name())
+
+		if _, err := os.Stat(filepath.Join(serverDir, ".deleted")); err == nil {
+			continue
+		}
+		metaData, err := os.ReadFile(filepath.Join(serverDir, ".satisfactory"))
+		if err != nil {
+			continue // not a Satisfactory server
+		}
+		uuidData, err := os.ReadFile(filepath.Join(serverDir, ".uuid"))
+		if err != nil {
+			continue
+		}
+		uuid := strings.TrimSpace(string(uuidData))
+
+		a.satServersMu.RLock()
+		_, exists := a.satServers[uuid]
+		a.satServersMu.RUnlock()
+		if exists {
+			continue
+		}
+
+		var m satMeta
+		if err := json.Unmarshal(metaData, &m); err != nil {
+			log.Printf("Warning: bad Satisfactory metadata in %s: %v", entry.Name(), err)
+			continue
+		}
+
+		sat := satisfactory.NewServer(satisfactory.Config{
+			UUID:         uuid,
+			Name:         m.Name,
+			GamePort:     m.GamePort,
+			ReliablePort: m.ReliablePort,
+			MaxPlayers:   m.MaxPlayers,
+			AllocatedRAM: m.AllocatedRAM,
+			DataDir:      serverDir,
+			HostConfig:   a.hostServerConfigPath(serverDir),
+			SkipUpdate:   m.SkipUpdate,
+		})
+
+		a.satServersMu.Lock()
+		a.satServers[uuid] = sat
+		a.satServersMu.Unlock()
+
+		// Resume provisioning/polling (an already-claimed server just resumes).
+		go sat.Provision(func() { a.pushSatState(uuid, sat) })
+
+		log.Printf("Discovered Satisfactory server: %s (%s)", m.Name, uuid)
+	}
+
+	return nil
+}
+
+// pollSatisfactory periodically refreshes live state for all Satisfactory
+// servers and pushes it to the panel.
+func (a *Agent) pollSatisfactory() {
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+	for range ticker.C {
+		a.satServersMu.RLock()
+		uuids := make([]string, 0, len(a.satServers))
+		servers := make([]*satisfactory.Server, 0, len(a.satServers))
+		for uuid, sat := range a.satServers {
+			uuids = append(uuids, uuid)
+			servers = append(servers, sat)
+		}
+		a.satServersMu.RUnlock()
+
+		for i, sat := range servers {
+			sat.Poll()
+			a.pushSatState(uuids[i], sat)
+		}
+	}
+}
+
+// pushSatState reports a Satisfactory server's credentials/state to the panel,
+// stored in the server's properties JSON (sat_* keys).
+func (a *Agent) pushSatState(uuid string, sat *satisfactory.Server) {
+	st := sat.StateSnapshot()
+	props := map[string]string{
+		"sat_admin_password":  st.AdminPassword,
+		"sat_client_password": st.ClientPassword,
+		"sat_session":         st.Session,
+		"sat_claimed":         boolStr(st.Claimed),
+		"sat_healthy":         boolStr(st.Healthy),
+		"sat_game_running":    boolStr(st.GameRunning),
+		"sat_paused":          boolStr(st.Paused),
+		"sat_tick_rate":       fmt.Sprintf("%.1f", st.TickRate),
+	}
+	if err := a.client.SyncProperties(&api.PropertiesRequest{ServerUUID: uuid, Properties: props}); err != nil {
+		log.Printf("[Satisfactory] failed to push state for %s: %v", uuid, err)
+	}
+}
+
+// applySatisfactorySettings handles the update_satisfactory_settings command.
+// Settings that the live API supports (name, join password, options) are applied
+// in place; settings that require a new container (max players, modded/skip-update)
+// trigger a recreate.
+func (a *Agent) applySatisfactorySettings(cmd api.Command, sat *satisfactory.Server) error {
+	if cmd.Payload == nil {
+		return fmt.Errorf("settings require payload")
+	}
+	p := cmd.Payload
+	needsRecreate := false
+
+	if mp, ok := p["max_players"].(float64); ok && int(mp) != sat.MaxPlayers {
+		sat.MaxPlayers = int(mp)
+		needsRecreate = true
+	}
+	if su, ok := p["skip_update"].(bool); ok && su != sat.SkipUpdate {
+		sat.SkipUpdate = su
+		needsRecreate = true
+	}
+
+	// Live-API settings.
+	set := satisfactory.Settings{Options: map[string]string{}}
+	if name, ok := p["server_name"].(string); ok && name != "" {
+		set.ServerName = &name
+	}
+	if cp, ok := p["client_password"].(string); ok {
+		set.ClientPassword = &cp
+	}
+	if v, ok := p["auto_pause"].(bool); ok {
+		set.Options["FG.DSAutoPause"] = boolOpt(v)
+	}
+	if v, ok := p["save_on_disconnect"].(bool); ok {
+		set.Options["FG.DSAutoSaveOnDisconnect"] = boolOpt(v)
+	}
+	if v, ok := p["autosave_interval"].(float64); ok {
+		set.Options["FG.AutosaveInterval"] = fmt.Sprintf("%d", int(v))
+	}
+
+	var firstErr error
+	if set.ServerName != nil || set.ClientPassword != nil || len(set.Options) > 0 {
+		if err := sat.ApplySettings(set); err != nil {
+			firstErr = err
+		}
+	}
+
+	if needsRecreate {
+		a.writeSatisfactoryMeta(sat.DataDir, satMeta{
+			Name:         sat.Name,
+			GamePort:     sat.GamePort,
+			ReliablePort: sat.ReliablePort,
+			MaxPlayers:   sat.MaxPlayers,
+			AllocatedRAM: sat.AllocatedRAM,
+			SkipUpdate:   sat.SkipUpdate,
+		})
+		if err := sat.Recreate(); err != nil {
+			return err
+		}
+		go sat.Provision(func() { a.pushSatState(cmd.ServerUUID, sat) })
+	}
+
+	a.pushSatState(cmd.ServerUUID, sat)
+	return firstErr
+}
+
+func boolStr(v bool) string {
+	if v {
+		return "true"
+	}
+	return "false"
+}
+
+func boolOpt(v bool) string {
+	if v {
+		return "1"
+	}
+	return "0"
 }
 
 // deleteServer handles the delete_server command from cloud

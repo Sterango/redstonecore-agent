@@ -17,6 +17,11 @@ services:
       # Optional: Timezone (default: UTC)
       - TZ=${TZ:-UTC}
 
+      # Host path of ./data — sibling game containers (e.g. Satisfactory) bind-mount
+      # against HOST paths, not the agent's in-container /data. The agent also tries
+      # to auto-detect this, but setting it explicitly is the most reliable.
+      - RSC_HOST_DATA_DIR=${PWD}/data
+
     volumes:
       # Server data (world files, plugins, mods, etc.)
       - ./data:/data

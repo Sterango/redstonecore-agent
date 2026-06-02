@@ -24,6 +24,7 @@ type Config struct {
 	SFTPRelayURL string         `yaml:"sftp_relay_url"`
 	DataDir      string         `yaml:"data_dir"`
 	ConfigDir    string         `yaml:"config_dir"`
+	HostDataDir  string         `yaml:"host_data_dir"` // host path of DataDir, for sibling game containers
 	Servers      []ServerConfig `yaml:"servers"`
 
 	// Runtime fields (not from config file)
@@ -55,6 +56,9 @@ func Load(configPath string) (*Config, error) {
 	}
 	if sftpRelayURL := os.Getenv("RSC_SFTP_RELAY_URL"); sftpRelayURL != "" {
 		cfg.SFTPRelayURL = sftpRelayURL
+	}
+	if hostDataDir := os.Getenv("RSC_HOST_DATA_DIR"); hostDataDir != "" {
+		cfg.HostDataDir = hostDataDir
 	}
 
 	// Try to load from config file

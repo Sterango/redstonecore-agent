@@ -124,6 +124,7 @@ type SyncServersRequest struct {
 type SyncServer struct {
 	UUID             string   `json:"uuid,omitempty"`
 	Name             string   `json:"name"`
+	Game             string   `json:"game,omitempty"`
 	Type             string   `json:"type"`
 	MinecraftVersion string   `json:"minecraft_version,omitempty"`
 	Port             int      `json:"port"`

@@ -692,8 +692,10 @@ func (s *Server) GetProcessMetrics() (memoryMB int, cpuPercent float64) {
 
 	pid := s.cmd.Process.Pid
 
-	// Read memory from /proc/[pid]/status
-	memoryMB = s.readProcessMemory(pid)
+	// Sum RSS over the whole process subtree. Modpack launchers (startserver.sh)
+	// run java as a child, so reading only the wrapper PID reports ~1MB; the
+	// actual server memory lives in the java child(ren).
+	memoryMB = s.processTreeRSSMB(pid)
 
 	// Read CPU from /proc/[pid]/stat
 	cpuPercent = s.readProcessCPU(pid)
@@ -729,6 +731,79 @@ func (s *Server) readProcessMemory(pid int) int {
 	}
 
 	return 0
+}
+
+// readProcessRSSKB returns a single process's RSS in kB (0 if unavailable).
+func (s *Server) readProcessRSSKB(pid int) int64 {
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", pid))
+	if err != nil {
+		return 0
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(line, "VmRSS:") {
+			fields := strings.Fields(line)
+			if len(fields) >= 2 {
+				if kb, err := strconv.ParseInt(fields[1], 10, 64); err == nil {
+					return kb
+				}
+			}
+		}
+	}
+	return 0
+}
+
+// processTreeRSSMB sums RSS (MB) for a process and all of its descendants.
+func (s *Server) processTreeRSSMB(root int) int {
+	children := childrenByPPID()
+	var totalKB int64
+	seen := map[int]bool{}
+	queue := []int{root}
+	for len(queue) > 0 {
+		pid := queue[0]
+		queue = queue[1:]
+		if seen[pid] {
+			continue
+		}
+		seen[pid] = true
+		totalKB += s.readProcessRSSKB(pid)
+		queue = append(queue, children[pid]...)
+	}
+	return int(totalKB / 1024)
+}
+
+// childrenByPPID maps each parent PID to its child PIDs by scanning /proc.
+func childrenByPPID() map[int][]int {
+	m := map[int][]int{}
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return m
+	}
+	for _, e := range entries {
+		pid, err := strconv.Atoi(e.Name())
+		if err != nil {
+			continue
+		}
+		data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+		if err != nil {
+			continue
+		}
+		// Fields after the last ')' are: state ppid ... (comm may contain spaces/parens).
+		stat := string(data)
+		rp := strings.LastIndex(stat, ")")
+		if rp < 0 || rp+1 >= len(stat) {
+			continue
+		}
+		fields := strings.Fields(stat[rp+1:])
+		if len(fields) < 2 {
+			continue
+		}
+		ppid, err := strconv.Atoi(fields[1])
+		if err != nil {
+			continue
+		}
+		m[ppid] = append(m[ppid], pid)
+	}
+	return m
 }
 
 // readProcessCPU calculates CPU usage percentage since last check

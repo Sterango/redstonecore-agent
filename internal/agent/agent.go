@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bufio"
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
@@ -971,6 +972,7 @@ func (a *Agent) createSatisfactoryServer(cmd api.Command) error {
 	// panel posted on credentials/state. Runs in the background — first boot
 	// downloads several GB before the API responds.
 	go sat.Provision(func() { a.pushSatState(cmd.ServerUUID, sat) })
+	go a.streamSatisfactoryLogs(cmd.ServerUUID)
 
 	log.Printf("Satisfactory server %s created.", name)
 	return nil
@@ -996,6 +998,10 @@ func (a *Agent) deleteSatisfactoryServer(uuid string) error {
 		delete(a.satServers, uuid)
 	}
 	a.satServersMu.Unlock()
+
+	// Stop the log streamer/console buffer (the streamer goroutine exits now
+	// that the server is no longer tracked).
+	a.stopConsoleBuffer(uuid)
 
 	serverDir := ""
 	if ok {
@@ -1082,6 +1088,7 @@ func (a *Agent) discoverSatisfactoryServers() error {
 
 		// Resume provisioning/polling (an already-claimed server just resumes).
 		go sat.Provision(func() { a.pushSatState(uuid, sat) })
+		go a.streamSatisfactoryLogs(uuid)
 
 		log.Printf("Discovered Satisfactory server: %s (%s)", m.Name, uuid)
 	}
@@ -1108,6 +1115,47 @@ func (a *Agent) pollSatisfactory() {
 			sat.Poll()
 			a.pushSatState(uuids[i], sat)
 		}
+	}
+}
+
+// streamSatisfactoryLogs tails the server's container logs into the console
+// buffer so the panel's console view shows install/startup output (Satisfactory
+// has no interactive console, so this is read-only). It re-attaches across
+// container restarts and exits once the server is deleted.
+func (a *Agent) streamSatisfactoryLogs(uuid string) {
+	buf := a.createConsoleBuffer(uuid)
+	for {
+		a.satServersMu.RLock()
+		_, ok := a.satServers[uuid]
+		a.satServersMu.RUnlock()
+		if !ok {
+			return // server deleted
+		}
+
+		cmd := exec.Command("docker", "logs", "-f", "--tail", "150", satisfactory.ContainerName(uuid))
+		pr, pw := io.Pipe()
+		cmd.Stdout = pw
+		cmd.Stderr = pw
+		if err := cmd.Start(); err != nil {
+			pw.Close()
+			time.Sleep(5 * time.Second)
+			continue
+		}
+
+		done := make(chan struct{})
+		go func() {
+			scanner := bufio.NewScanner(pr)
+			scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+			for scanner.Scan() {
+				buf.AddLine(scanner.Text())
+			}
+			close(done)
+		}()
+
+		cmd.Wait() // blocks until `docker logs -f` exits (container stop/restart/removal)
+		pw.Close()
+		<-done
+		time.Sleep(2 * time.Second) // brief backoff before re-attaching
 	}
 }
 

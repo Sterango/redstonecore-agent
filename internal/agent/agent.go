@@ -2580,9 +2580,15 @@ func (a *Agent) updateProperties(cmd api.Command, server *minecraft.Server) erro
 		return fmt.Errorf("properties must be a map")
 	}
 
-	// Convert to map[string]string
+	// Convert to map[string]string. A JSON null arrives as a nil interface;
+	// fmt.Sprintf("%v", nil) would write the literal "<nil>" (e.g. server-ip=<nil>,
+	// which crashes Minecraft with UnknownHostException). Treat null as an empty value.
 	properties := make(map[string]string)
 	for k, v := range propertiesRaw {
+		if v == nil {
+			properties[k] = ""
+			continue
+		}
 		properties[k] = fmt.Sprintf("%v", v)
 	}
 

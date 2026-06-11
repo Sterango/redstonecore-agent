@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -110,6 +111,15 @@ func (s *Server) Start() error {
 
 	s.Status = StatusStarting
 
+	// A freshly starting server has nobody online. Reset the player list so that
+	// players who were connected when the server previously crashed or was killed
+	// (and therefore never logged a "left the game" message) don't linger as
+	// phantoms — which showed up as "1/100 online" with the world empty.
+	s.playersMutex.Lock()
+	s.CurrentPlayers = make([]string, 0)
+	s.PlayerCount = 0
+	s.playersMutex.Unlock()
+
 	// Find the JAR file or run script
 	jarPath, err := s.findJarFile()
 	if err != nil {
@@ -152,6 +162,14 @@ func (s *Server) Start() error {
 	}
 
 	s.cmd.Dir = s.DataDir
+
+	// Run the server in its own process group so we can later signal the whole
+	// tree. For Forge/NeoForge packs s.cmd is the run.sh bash wrapper and the real
+	// JVM is its child; without this, killing s.cmd's PID leaves the java orphaned
+	// (reparented to the agent) and still holding world/session.lock. With Setpgid
+	// the wrapper becomes the group leader (pgid == its pid) and Kill() can reap the
+	// whole group, java included.
+	s.cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	// Set up pipes for stdin/stdout/stderr
 	stdin, err := s.cmd.StdinPipe()
@@ -316,8 +334,15 @@ func (s *Server) Kill() error {
 		return nil
 	}
 
-	if err := s.cmd.Process.Kill(); err != nil {
-		return fmt.Errorf("failed to kill server: %w", err)
+	// Signal the entire process group (negative PID) so the JVM grandchild dies
+	// with its run.sh wrapper instead of being orphaned and left holding the world
+	// lock. The process was started with Setpgid, so pgid == s.cmd.Process.Pid.
+	pid := s.cmd.Process.Pid
+	if err := syscall.Kill(-pid, syscall.SIGKILL); err != nil {
+		// Fall back to killing just the wrapper process if the group signal fails.
+		if perr := s.cmd.Process.Kill(); perr != nil {
+			return fmt.Errorf("failed to kill server: %w", perr)
+		}
 	}
 
 	s.Status = StatusStopped
@@ -487,6 +512,14 @@ func (s *Server) monitorProcess() {
 
 	s.stdin = nil
 	s.cmd = nil
+
+	// The process is gone, so no one is online. Clear the player list now (a crash
+	// or kill never emits per-player "left the game" lines) so the dashboard drops
+	// to 0/N immediately instead of leaving phantom players counted.
+	s.playersMutex.Lock()
+	s.CurrentPlayers = make([]string, 0)
+	s.PlayerCount = 0
+	s.playersMutex.Unlock()
 }
 
 func (s *Server) findJarFile() (string, error) {

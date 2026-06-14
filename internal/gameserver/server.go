@@ -131,6 +131,15 @@ func (s *Server) Stop() error    { return s.dockerAction("stop") }
 func (s *Server) Restart() error { return s.dockerAction("restart") }
 func (s *Server) Kill() error    { return s.dockerAction("kill") }
 
+// RunLGSM runs a LinuxGSM command (e.g. "update") inside the server container as
+// the LinuxGSM user. Returns the combined output. The gameserver script lives at
+// /data/<name> in the LinuxGSM image.
+func (s *Server) RunLGSM(args ...string) (string, error) {
+	full := append([]string{"exec", "-u", "1000", "-w", "/data", s.container(), "./" + s.spec.Name}, args...)
+	out, err := exec.Command("docker", full...).CombinedOutput()
+	return strings.TrimSpace(string(out)), err
+}
+
 // Remove force-removes the container (missing container is not an error).
 func (s *Server) Remove() error {
 	out, err := exec.Command("docker", "rm", "-f", s.container()).CombinedOutput()

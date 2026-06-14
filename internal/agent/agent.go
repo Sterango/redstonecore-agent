@@ -839,6 +839,14 @@ func (a *Agent) ExecuteCommand(cmd api.Command) error {
 			return gs.Kill()
 		case "update_game_settings":
 			return a.updateGameSettings(cmd, gs)
+		case "update_game_config":
+			return a.updateGameConfig(cmd, gs)
+		case "game_action":
+			return a.gameAction(cmd, gs)
+		case "install_game_mod":
+			return a.installGameMod(cmd, gs)
+		case "remove_game_mod":
+			return a.removeGameMod(cmd, gs)
 		default:
 			return fmt.Errorf("command %q is not supported for %s servers", cmd.Command, gs.Game)
 		}
@@ -1653,11 +1661,14 @@ func (a *Agent) updateGameSettings(cmd api.Command, gs *gameserver.Server) error
 	return gs.Recreate()
 }
 
-// pollGameServers refreshes live player counts (A2S) for all game servers.
+// pollGameServers refreshes live player counts (A2S) for all game servers and
+// periodically pushes {game}_* panel status (installed mods, players, map).
 func (a *Agent) pollGameServers() {
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
+	tick := 0
 	for range ticker.C {
+		tick++
 		a.gameServersMu.RLock()
 		servers := make([]*gameserver.Server, 0, len(a.gameServers))
 		for _, gs := range a.gameServers {
@@ -1666,6 +1677,9 @@ func (a *Agent) pollGameServers() {
 		a.gameServersMu.RUnlock()
 		for _, gs := range servers {
 			gs.Poll()
+			if tick%6 == 0 { // ~every 60s, refresh panel status props
+				a.pushGameState(gs.UUID, gs)
+			}
 		}
 	}
 }

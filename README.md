@@ -27,6 +27,31 @@ docker compose up -d
 docker compose logs -f
 ```
 
+### 2b. Deploy on Windows (Docker Desktop + WSL2)
+
+On a Windows 10/11 PC, run the agent inside Docker Desktop with the WSL2 backend. Open
+**PowerShell** or **Command Prompt** and run (it self-elevates to administrator):
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://redstonecore.net/downloads/install-windows.ps1 | iex"
+```
+
+> `irm`/`iex` are PowerShell aliases, so the shorter `irm <url> | iex` only works inside
+> PowerShell. The command above works from either PowerShell or Command Prompt.
+
+The installer ensures WSL2 + Docker Desktop are present, prompts for your license key, sets the
+agent up inside your WSL2 distro (`~/redstonecore`), configures auto-start on login, and opens the
+Windows Firewall for game ports.
+
+Notes specific to Windows:
+- It uses [`docker-compose.windows.yml`](docker-compose.windows.yml) instead of the Linux compose.
+  Docker Desktop does not expose `network_mode: host` to Windows, so Minecraft ports are **published**
+  explicitly (default range `25565-25584`) — server ports assigned in the console must fall in that range.
+- The files live inside the WSL2 filesystem so `./data` is fast and is daemon-visible for Satisfactory's
+  sibling containers.
+- Docker Desktop starts on login (it is not a pre-login Windows service); the agent then auto-starts via
+  the restart policy. Manage it with `rsc start | stop | restart | logs | update | status`.
+
 ### 3. Manage via Cloud Console
 
 Log in to [redstonecore.net](https://redstonecore.net) to:

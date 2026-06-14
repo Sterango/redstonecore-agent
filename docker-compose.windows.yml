@@ -1,0 +1,68 @@
+# RedstoneCore Agent — Windows (Docker Desktop + WSL2)
+#
+# This is the Windows variant of the compose file. install-windows.ps1 downloads it
+# and saves it INSIDE the WSL2 distro as `docker-compose.yml` (the default name the
+# agent's self-update expects — it runs `docker compose` without `-f`).
+#
+# Why it differs from the Linux compose:
+#   * NO `network_mode: host`. Docker Desktop's host networking does not expose
+#     container ports to the Windows host, so the Minecraft port range is published
+#     explicitly below. (Satisfactory servers run as *sibling* containers that publish
+#     their own ports, so Docker Desktop forwards those to Windows automatically.)
+#   * It is meant to run from inside the WSL2 filesystem (e.g. ~/redstonecore) so that
+#     ./data lives on the fast Linux filesystem and is daemon-visible for the sibling
+#     Satisfactory container bind mounts (see RSC_HOST_DATA_DIR below).
+
+services:
+  redstonecore:
+    image: ghcr.io/sterango/redstonecore-agent:latest
+    container_name: redstonecore
+    restart: unless-stopped
+    user: root
+
+    # Minecraft servers run INSIDE this container, so their ports must be published
+    # here. Ports assigned to Minecraft servers in the web console must fall within
+    # this range on Windows. Widen it if you run more than ~20 servers.
+    ports:
+      - "25565-25584:25565-25584/tcp"
+      - "25565-25584:25565-25584/udp"
+
+    environment:
+      # Required: your license key from redstonecore.net
+      - RSC_LICENSE_KEY=${RSC_LICENSE_KEY}
+
+      # Optional: timezone (default: UTC)
+      - TZ=${TZ:-UTC}
+
+      # Host path of ./data — sibling game containers (Satisfactory) bind-mount against
+      # HOST paths, not the agent's in-container /data. Running inside WSL2 makes ${PWD}
+      # a daemon-visible Linux path, so this resolves correctly.
+      - RSC_HOST_DATA_DIR=${PWD}/data
+
+    volumes:
+      # Server data (worlds, plugins, mods, Satisfactory saves, etc.)
+      - ./data:/data
+
+      # Configuration files
+      - ./config:/config
+
+      # Docker socket — needed for self-updates AND for Satisfactory sibling containers
+      - /var/run/docker.sock:/var/run/docker.sock
+
+      # Compose file for the self-update restart command (must be the default name)
+      - ./docker-compose.yml:/docker-compose.yml:ro
+
+    # Resource limits — total RAM for all Minecraft servers + agent overhead.
+    # Leave headroom for Windows + Docker Desktop (the WSL2 VM) itself.
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+        reservations:
+          memory: 2G
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"

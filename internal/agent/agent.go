@@ -956,6 +956,7 @@ func (a *Agent) createServer(cmd api.Command) error {
 	a.serversMu.Unlock()
 
 	// Ensure server.properties is set up
+	a.reportInstall(cmd.ServerUUID, "preparing", "Preparing server files", installStagePct("preparing"))
 	if err := server.EnsureServerProperties(); err != nil {
 		log.Printf("Warning: Failed to setup server.properties: %v", err)
 	}
@@ -965,14 +966,21 @@ func (a *Agent) createServer(cmd api.Command) error {
 	var jarPath string
 	var err error
 	if loaderVersion != "" {
+		a.reportInstall(cmd.ServerUUID, "installing_loader",
+			fmt.Sprintf("Installing %s %s for Minecraft %s", serverType, loaderVersion, version),
+			installStagePct("installing_loader"))
 		jarPath, err = downloader.DownloadServerWithLoader(minecraft.ServerType(serverType), version, loaderVersion, serverDir)
 	} else {
+		a.reportInstall(cmd.ServerUUID, "downloading_server",
+			fmt.Sprintf("Downloading %s %s", serverType, version),
+			installStagePct("downloading_server"))
 		jarPath, err = downloader.DownloadServer(minecraft.ServerType(serverType), version, serverDir)
 	}
 	if err != nil {
 		return fmt.Errorf("failed to download server JAR: %w", err)
 	}
 
+	a.reportInstall(cmd.ServerUUID, "finalizing", "Finalizing server", installStagePct("finalizing"))
 	log.Printf("Downloaded JAR to: %s", jarPath)
 	log.Printf("Server %s created successfully!", name)
 	return nil
@@ -1077,6 +1085,7 @@ func (a *Agent) createSatisfactoryServer(cmd api.Command) error {
 	log.Printf("Creating Satisfactory server: %s (game port %d, reliable %d)", name, int(gamePort), int(reliablePort))
 	if err := sat.Install(func(stage, message string) {
 		log.Printf("[Satisfactory] %s: %s", stage, message)
+		a.reportInstall(cmd.ServerUUID, stage, message, installStagePct(stage))
 	}); err != nil {
 		return fmt.Errorf("failed to install Satisfactory server: %w", err)
 	}
@@ -1532,6 +1541,7 @@ func (a *Agent) createGameServer(cmd api.Command, game string) error {
 	log.Printf("Creating %s server: %s (base port %d)", game, name, int(basePort))
 	if err := gs.Install(func(stage, message string) {
 		log.Printf("[%s] %s: %s", game, stage, message)
+		a.reportInstall(cmd.ServerUUID, stage, message, installStagePct(stage))
 	}); err != nil {
 		return fmt.Errorf("failed to install %s server: %w", game, err)
 	}

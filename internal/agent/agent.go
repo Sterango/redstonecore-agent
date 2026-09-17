@@ -794,6 +794,17 @@ func (a *Agent) ExecuteCommand(cmd api.Command) error {
 		return a.updateAgent(cmd)
 	}
 
+	// Server import. Both stages run before any server exists in a.servers, so
+	// they are dispatched ahead of the server lookup below. Each command already
+	// runs in its own goroutine (see heartbeat.executeCommand), so a multi-hour
+	// transfer does not block other commands.
+	if cmd.Command == "import_inspect" {
+		return a.handleImportInspect(cmd)
+	}
+	if cmd.Command == "import_finalize" {
+		return a.handleImportFinalize(cmd)
+	}
+
 	// Satisfactory servers are managed as sibling Docker containers; only the
 	// shared lifecycle commands apply (no console/plugins/properties/etc.).
 	a.satServersMu.RLock()
@@ -1765,8 +1776,56 @@ func (a *Agent) deleteServer(cmd api.Command) error {
 
 // updateAgent handles the update_agent command from cloud
 // This function triggers a self-update via Docker
+// saveAllServers flushes worlds before a self-update. Minecraft servers run as
+// in-process children of the agent and are killed by the restart, so save-all is
+// essential; Satisfactory/LinuxGSM run as sibling containers that survive the
+// update, but Satisfactory is flushed too for safety. Best-effort — errors are
+// logged, never fatal.
+func (a *Agent) saveAllServers() {
+	a.serversMu.RLock()
+	mc := make([]*minecraft.Server, 0, len(a.servers))
+	for _, s := range a.servers {
+		mc = append(mc, s)
+	}
+	a.serversMu.RUnlock()
+
+	a.satServersMu.RLock()
+	sats := make([]*satisfactory.Server, 0, len(a.satServers))
+	for _, s := range a.satServers {
+		sats = append(sats, s)
+	}
+	a.satServersMu.RUnlock()
+
+	saved := 0
+	for _, s := range mc {
+		if s.Status != minecraft.StatusRunning {
+			continue
+		}
+		if err := s.SendCommand("save-all flush"); err != nil {
+			log.Printf("[Update] save-all failed for %s: %v", s.UUID, err)
+			continue
+		}
+		saved++
+	}
+	for _, s := range sats {
+		if err := s.SaveWorld(""); err != nil {
+			log.Printf("[Update] Satisfactory save failed for %s: %v", s.UUID, err)
+			continue
+		}
+		saved++
+	}
+
+	if saved > 0 {
+		log.Printf("[Update] Flushed %d server(s); pausing for disk write…", saved)
+		time.Sleep(3 * time.Second)
+	}
+}
+
 func (a *Agent) updateAgent(cmd api.Command) error {
 	log.Printf("[Update] Starting self-update...")
+
+	// Flush worlds first — the restart kills in-process (Minecraft) servers.
+	a.saveAllServers()
 
 	// Pull the latest image
 	log.Printf("[Update] Pulling latest image...")

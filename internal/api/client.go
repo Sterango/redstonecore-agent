@@ -396,3 +396,45 @@ func (c *Client) post(path string, body interface{}, auth bool) ([]byte, error) 
 
 	return respBody, nil
 }
+
+// ImportProgressRequest reports how far along a server import is, before a
+// server record exists on the panel.
+type ImportProgressRequest struct {
+	ImportID string `json:"import_id"`
+	Status   string `json:"status"` // transferring, extracting, detecting, importing, failed
+	Message  string `json:"message,omitempty"`
+	Progress int    `json:"progress"`
+}
+
+// ReportImportProgress reports server import progress
+func (c *Client) ReportImportProgress(req *ImportProgressRequest) error {
+	_, err := c.post("/api/v1/instance/import/progress", req, true)
+	return err
+}
+
+// ImportDetectedRequest reports the config recovered from an imported archive.
+// Detected is the minecraft.Detection struct, marshalled by the caller.
+type ImportDetectedRequest struct {
+	ImportID string      `json:"import_id"`
+	Detected interface{} `json:"detected"`
+}
+
+// ReportImportDetected hands the detection result to the panel for user review
+func (c *Client) ReportImportDetected(req *ImportDetectedRequest) error {
+	_, err := c.post("/api/v1/instance/import/detected", req, true)
+	return err
+}
+
+// ImportCompleteRequest closes out an import after the confirmed config has been
+// applied to the server directory.
+type ImportCompleteRequest struct {
+	ImportID string `json:"import_id"`
+	Success  bool   `json:"success"`
+	Message  string `json:"message,omitempty"`
+}
+
+// ReportImportComplete reports that an import finished (or failed)
+func (c *Client) ReportImportComplete(req *ImportCompleteRequest) error {
+	_, err := c.post("/api/v1/instance/import/complete", req, true)
+	return err
+}
